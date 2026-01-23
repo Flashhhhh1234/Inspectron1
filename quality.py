@@ -47,7 +47,7 @@ def get_app_base_dir():
 
 
 class ManagerDB:
-    """Manager database integration with storage_location and excel_path support"""
+    """Manager database integration with storage_location and excel_path support used for updating and syncing stats with the dashboard"""
     def __init__(self, db_path):
         self.db_path = db_path
         self.init_database()
@@ -4989,3 +4989,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
