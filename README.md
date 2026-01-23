@@ -36,24 +36,6 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 - **Image Processing:** OpenCV and PIL for image handling
 - **Visualization:** Matplotlib for analytics and charts
 
-### Module Organization
-
-```
-Inspectron1/
-├── login.py                        # Login system and user management
-├── manager.py                      # Manager analytics and reporting interface
-├── quality.py                      # Main quality inspection tool
-├── production.py                   # Production rework interface
-├── database_manager.py             # SQLite database operations
-├── handover_database.py            # Quality-Production workflow management
-├── categories.json                 # Defect type definitions
-├── credentials.json                # User credentials storage
-├── Emerson.xlsx                    # Master template for Excel files
-├── inspection_tool.db              # Quality inspection records
-├── manager.db                      # Management and analytics data
-└── handover.db                     # Handover transaction logs
-```
-
 ### System Flow
 
 ```
