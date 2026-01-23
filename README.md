@@ -149,7 +149,7 @@ brew install tesseract
    ```
 
 4. **Set Tesseract Path** (Windows)
-   - In `circuit_inspector.py`, update the path:
+   - In `quality.py`, update the path:
    ```python
    TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
    if os.path.exists(TESSERACT_PATH):
