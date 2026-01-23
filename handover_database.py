@@ -448,10 +448,10 @@ class HandoverDB:
             conn.close()
             
             if affected > 0:
-                print(f"✓ Production item verified: {cabinet_id} -> {status}")
+                print(f" Production item verified: {cabinet_id} -> {status}")
                 return True
             else:
-                print(f"⚠️ No pending item found for {cabinet_id}")
+                print(f" No pending item found for {cabinet_id}")
                 return False
             
         except Exception as e:
@@ -518,7 +518,7 @@ class HandoverDB:
             conn.close()
             
             if affected > 0:
-                print(f"✓ Quality verification updated: {cabinet_id} -> {status}")
+                print(f" Quality verification updated: {cabinet_id} -> {status}")
                 return True
             return False
             

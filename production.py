@@ -110,7 +110,7 @@ class ManagerDB:
             
             conn.commit()
             conn.close()
-            print(f"✓ Manager DB: Updated {cabinet_id} - Status: {status}")
+            print(f"Manager DB: Updated {cabinet_id} - Status: {status}")
             return True
         except Exception as e:
             print(f"Manager DB update error: {e}")
@@ -132,7 +132,7 @@ class ManagerDB:
             
             conn.commit()
             conn.close()
-            print(f"✓ Manager DB: Status updated for {cabinet_id} → {status}")
+            print(f"Manager DB: Status updated for {cabinet_id} → {status}")
             return True
         except Exception as e:
             print(f"Status update error: {e}")
@@ -160,7 +160,7 @@ class ProductionTool:
         self.annotations = []
         
         base = get_app_base_dir()
-        self.handover_db = HandoverDB(os.path.join(base, "handover_db.json"))
+        self.handover_db = HandoverDB(os.path.join(base, "handover.db"))
         self.db = DatabaseManager(os.path.join(base, "inspection_tool.db"))
         self.manager_db = ManagerDB(os.path.join(base, "manager.db"))
         
@@ -375,7 +375,7 @@ class ProductionTool:
         # Tools Menu
         tools_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="🛠️ Tools", menu=tools_menu)
-        tools_menu.add_command(label="🏭 Production Mode", command=self.production_mode, accelerator="Ctrl+P")
+        tools_menu.add_command(label=" Production Mode", command=self.production_mode, accelerator="Ctrl+P")
         tools_menu.add_separator()
         tools_menu.add_command(label="✅ Complete & Handback", command=self.complete_rework_handback, accelerator="Ctrl+H")
         
@@ -485,21 +485,21 @@ class ProductionTool:
         except Exception as e:
             print(f"Could not load tool icons: {e}")
             # Fallback to text buttons
-            self.pen_btn = tk.Button(tool_frame, text="✏️ Pen", 
+            self.pen_btn = tk.Button(tool_frame, text="Pen", 
                      command=lambda: self.set_tool_mode("pen"),
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
                      cursor='hand2')
             self.pen_btn.pack(side=tk.LEFT, padx=2)
             
-            self.text_btn = tk.Button(tool_frame, text="🅰️ Text", 
+            self.text_btn = tk.Button(tool_frame, text="Text", 
                      command=lambda: self.set_tool_mode("text"),
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
                      cursor='hand2')
             self.text_btn.pack(side=tk.LEFT, padx=2)
             
-            tk.Button(tool_frame, text="↶ Undo",
+            tk.Button(tool_frame, text="Undo",
                      command=self.undo_last_action,
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
@@ -509,7 +509,7 @@ class ProductionTool:
         right_frame = tk.Frame(toolbar, bg='#1e293b')
         right_frame.pack(side=tk.RIGHT, padx=10, pady=10)
         
-        tk.Button(right_frame, text="🏭 Production Mode", command=self.production_mode,
+        tk.Button(right_frame, text=" Production Mode", command=self.production_mode,
                  bg='#f59e0b', fg='white', padx=15, pady=10,
                  font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, borderwidth=0,
                  cursor='hand2').pack(side=tk.LEFT, padx=3)
@@ -714,7 +714,7 @@ class ProductionTool:
                           f"has_bbox_page={'bbox_page' in ann}, "
                           f"sr_no={ann.get('sr_no')}")
             else:
-                print(f"⚠️ No session file found")
+                print(f"No session file found")
                 self.annotations = []
                 self.session_refs.clear()
             
@@ -965,7 +965,7 @@ class ProductionTool:
         
         if not punches:
             messagebox.showinfo("No Punches", 
-                              "✓ All punches are closed!\n"
+                              " All punches are closed!\n"
                               "You can now handback to Quality.", 
                               icon='info')
             return
@@ -985,7 +985,7 @@ class ProductionTool:
         header_frame.pack(fill=tk.X)
         header_frame.pack_propagate(False)
         
-        tk.Label(header_frame, text="🖍️ PRODUCTION MODE - HIGHLIGHTER",
+        tk.Label(header_frame, text=" PRODUCTION MODE - HIGHLIGHTER",
                 bg='#f59e0b', fg='white',
                 font=('Segoe UI', 14, 'bold')).pack(pady=15)
         
@@ -1074,7 +1074,7 @@ class ProductionTool:
             # Display quality remarks from quality team
             if ann and ann.get('quality_remark'):
                 text_widget.insert(tk.END, f"\n───────────────────────\n")
-                text_widget.insert(tk.END, "📋 Quality Remarks:\n")
+                text_widget.insert(tk.END, " Quality Remarks:\n")
                 text_widget.insert(tk.END, ann['quality_remark'])
             
             # Display previous implementation remarks
@@ -1142,7 +1142,7 @@ class ProductionTool:
                 show_item()
             else:
                 messagebox.showinfo("Complete",
-                                  "✓ All punches reviewed!\n"
+                                  " All punches reviewed!\n"
                                   "You can now handback to Quality.",
                                   icon='info', parent=dlg)
                 self.clear_production_visuals()
@@ -1178,13 +1178,13 @@ class ProductionTool:
             'pady': 12
         }
         
-        tk.Button(btn_frame, text="◀ Previous", command=prev_item,
+        tk.Button(btn_frame, text="<- Previous", command=prev_item,
                  bg='#94a3b8', fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
         
-        tk.Button(btn_frame, text="✓ MARK DONE", command=mark_implemented,
+        tk.Button(btn_frame, text="MARK DONE", command=mark_implemented,
                  bg='#10b981', fg='white', width=16, **btn_style).pack(side=tk.LEFT, padx=5)
         
-        tk.Button(btn_frame, text="Next ▶", command=next_item,
+        tk.Button(btn_frame, text="Next ->", command=next_item,
                  bg='#94a3b8', fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
         
         tk.Button(btn_frame, text="Close", command=on_close,
@@ -1239,7 +1239,7 @@ class ProductionTool:
                 self.highlight_annotation_visual(target_ann)
                 self._last_highlighted_ann = target_ann
         else:
-            print(f"⚠️ No annotation found for SR {sr_no}")
+            print(f" No annotation found for SR {sr_no}")
             print(f"Available annotation types: {set(a.get('type') for a in self.annotations)}")
             print(f"Available SR numbers: {set(a.get('sr_no') for a in self.annotations if a.get('sr_no'))}")
     
@@ -1258,7 +1258,7 @@ class ProductionTool:
             bbox_display = self.bbox_page_to_display(annotation['bbox_page'])
             print(f"  Using bbox_page: {annotation['bbox_page']}")
         else:
-            print("⚠️ Annotation has no points_page or bbox_page - cannot highlight")
+            print(" Annotation has no points_page or bbox_page - cannot highlight")
             return
         
         x1, y1, x2, y2 = bbox_display
@@ -1577,7 +1577,7 @@ class ProductionTool:
                 self.annotations.append(annotation)
                 self.add_to_undo_stack('add_annotation', annotation)
                 self.display_page()
-                self._flash_status("✓ Text added", bg='#10b981')
+                self._flash_status("Text added", bg='#10b981')
             self.drawing = False
             self.drawing_type = None
             self.update_tool_pane()
@@ -1699,12 +1699,12 @@ class ProductionTool:
                     print(f"  ⚠️ Skipping box annotation (boxes are disabled)")
 
             print(f"Rendered annotations:")
-            print(f"  🖍️ Highlights: {highlight_count}")
-            print(f"  ❌ Errors (as highlights): {error_count}")
-            print(f"  ✏️ Pen strokes: {pen_count}")
-            print(f"  🅰️ Text: {text_count}")
+            print(f"  ️ Highlights: {highlight_count}")
+            print(f"    Errors (as highlights): {error_count}")
+            print(f"  ️ Pen strokes: {pen_count}")
+            print(f"  ️ Text: {text_count}")
             if box_count > 0:
-                print(f"  📦 Boxes (skipped): {box_count}")
+                print(f" Boxes (skipped): {box_count}")
             print(f"{'='*40}\n")
 
             self.photo = ImageTk.PhotoImage(img)
@@ -1952,11 +1952,11 @@ class ProductionTool:
     def save_session(self):
         """Save current session to JSON file with all annotation types"""
         if not self.pdf_document:
-            print("⚠️ No PDF loaded - cannot save session")
+            print("No PDF loaded - cannot save session")
             return
         
         if not hasattr(self, 'storage_location') or not self.storage_location:
-            print("⚠️ Storage location not set - cannot save session")
+            print(" Storage location not set - cannot save session")
             return
         
         # Determine save path
@@ -2032,16 +2032,16 @@ class ProductionTool:
             print(f"\n✓ Session saved to: {save_path}")
             print(f"Total annotations: {len(self.annotations)}")
             if highlight_count > 0:
-                print(f"  🖍️ Highlights: {highlight_count}")
+                print(f" Highlights: {highlight_count}")
             if error_count > 0:
-                print(f"  ❌ Errors: {error_count}")
+                print(f" Errors: {error_count}")
             if pen_count > 0:
-                print(f"  ✏️ Pen strokes: {pen_count}")
+                print(f" Pen strokes: {pen_count}")
             if text_count > 0:
-                print(f"  🅰️ Text annotations: {text_count}")
+                print(f" Text annotations: {text_count}")
             
         except Exception as e:
-            print(f"❌ Failed to save session: {e}")
+            print(f" Failed to save session: {e}")
             import traceback
             traceback.print_exc()
     
@@ -2101,7 +2101,7 @@ class ProductionTool:
             # ===== BOX ANNOTATIONS - Count but skip =====
             if ann_type == 'box':
                 box_count += 1
-                print(f"  ⚠️ Skipping box annotation (type='box') - boxes are disabled")
+                print(f" Skipping box annotation (type='box') - boxes are disabled")
                 continue  # Skip box annotations
             
             # Ensure text content is restored
@@ -2118,12 +2118,12 @@ class ProductionTool:
         
         print(f"\n✓ Session loaded from: {path}")
         print(f"Total annotations loaded: {len(self.annotations)}")
-        print(f"  🖍️ Highlights: {highlight_count}")
-        print(f"  ❌ Errors (as highlights): {error_count}")
-        print(f"  ✏️ Pen strokes: {pen_count}")
-        print(f"  🅰️ Text annotations: {text_count}")
+        print(f"  ️ Highlights: {highlight_count}")
+        print(f"   Errors (as highlights): {error_count}")
+        print(f"  ️ Pen strokes: {pen_count}")
+        print(f"  ️ Text annotations: {text_count}")
         if box_count > 0:
-            print(f"  📦 Box annotations (skipped): {box_count}")
+            print(f" Box annotations (skipped): {box_count}")
         
         types_loaded = {}
         for ann in self.annotations:

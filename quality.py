@@ -403,7 +403,7 @@ class CircuitInspector:
         self.db = DatabaseManager(db_path)
         manager_db_path = os.path.join(base, "manager.db")
         self.manager_db = ManagerDB(manager_db_path)
-        self.handover_db = HandoverDB(os.path.join(base, "handover_db.json"))
+        self.handover_db = HandoverDB(os.path.join(base, "handover.db"))
         self.load_recent_projects_ui()
 
 
@@ -569,7 +569,7 @@ class CircuitInspector:
                     'timestamp': datetime.now().isoformat()
                 }
                 
-                # NEW: Extract text from highlighted area if orange highlighter
+                # Extract text from highlighted area if orange highlighter
                 if self.active_highlighter == 'orange':
                     extracted_text = self.extract_text_from_highlight_area(annotation)
                     
@@ -905,7 +905,7 @@ class CircuitInspector:
             print(f"Cropped area: {cropped.shape}")
             
             if cropped.size == 0:
-                print("❌ Empty crop")
+                print("Empty crop")
                 return None
             
             # Upscale 3x for better OCR
@@ -1501,7 +1501,7 @@ class CircuitInspector:
             self.current_sr_no = self.get_next_sr_no()
             self.display_page()
 
-            print(f"✓ Logged custom: Ref {ref_no}, SR {sr_no_assigned}")
+            print(f"Logged custom: Ref {ref_no}, SR {sr_no_assigned}")
             self._flash_status(f"✓ Custom punch Ref {ref_no}", bg='#8b5cf6')
 
             try:

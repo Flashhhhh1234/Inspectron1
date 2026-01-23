@@ -1723,9 +1723,9 @@ class ManagerUI:
             mode = 'parent' if category.get('subcategories') else 'template'
         
         mode_text = {
-            'template': ' Template',
-            'parent': ' Parent',
-            'wiring_selector': ' Wiring Selector'
+            'template': '📝 Template',
+            'parent': '📁 Parent',
+            'wiring_selector': '⚡ Wiring Selector'
         }.get(mode, mode)
         
         tk.Label(header, text=mode_text, font=('Segoe UI', 9),
@@ -1756,7 +1756,7 @@ class ManagerUI:
                          bg='#8b5cf6', fg='white', font=('Segoe UI', 9, 'bold'),
                          padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         elif mode == 'template':
-            tk.Button(btn_frame, text=" Test", command=lambda: self.handle_template_category(category),
+            tk.Button(btn_frame, text="🧪 Test", command=lambda: self.handle_template_category(category),
                      bg='#8b5cf6', fg='white', font=('Segoe UI', 9, 'bold'),
                      padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         
@@ -1789,7 +1789,7 @@ class ManagerUI:
                 type_label_frame = tk.Frame(type_header, bg='#e0e7ff')
                 type_label_frame.pack(side=tk.LEFT, padx=10, pady=5)
                 
-                tk.Label(type_label_frame, text=f" {wiring_type['type']}", 
+                tk.Label(type_label_frame, text=f"⚡ {wiring_type['type']}", 
                         font=('Segoe UI', 10, 'bold'),
                         bg='#e0e7ff', fg='#3730a3').pack(side=tk.LEFT)
                 
@@ -1895,7 +1895,7 @@ class ManagerUI:
         label_frame = tk.Frame(sub_row, bg='#fffbeb')
         label_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=6)
         
-        tk.Label(label_frame, text=f"  {sub['name']}", font=('Segoe UI', 9),
+        tk.Label(label_frame, text=f" ⭐ {sub['name']}", font=('Segoe UI', 9),
                 bg='#fffbeb', anchor='w').pack(side=tk.LEFT)
         
         ref_num = sub.get('ref_number', '')
@@ -2410,7 +2410,7 @@ class ManagerUI:
         header = tk.Frame(center_container, bg='#f8fafc')
         header.pack(fill=tk.X, padx=30, pady=(20, 10))
         
-        tk.Label(header, text=" Template Excel Editor", font=('Segoe UI', 16, 'bold'),
+        tk.Label(header, text="📝 Template Excel Editor", font=('Segoe UI', 16, 'bold'),
                 bg='#f8fafc').pack(side=tk.LEFT)
         
         # Info card
@@ -2445,17 +2445,17 @@ Template Location: {self.template_excel_file}
         }
         
         # Open template button
-        tk.Button(action_frame, text=" Open Template Excel",
+        tk.Button(action_frame, text="📂 Open Template Excel",
                  command=self.open_template_excel,
                  bg='#3b82f6', fg='white', **btn_style).pack(padx=20, pady=(0, 10))
         
         # Replace template button
-        tk.Button(action_frame, text="Replace Template File",
+        tk.Button(action_frame, text="🔄 Replace Template File",
                  command=self.replace_template_excel,
                  bg='#f59e0b', fg='white', **btn_style).pack(padx=20, pady=(0, 10))
         
         # Export template button
-        tk.Button(action_frame, text=” Export Template Copy",
+        tk.Button(action_frame, text="💾 Export Template Copy",
                  command=self.export_template_copy,
                  bg='#10b981', fg='white', **btn_style).pack(padx=20, pady=(0, 15))
         
@@ -2463,7 +2463,7 @@ Template Location: {self.template_excel_file}
         structure_frame = tk.Frame(center_container, bg='white', relief=tk.SOLID, borderwidth=1)
         structure_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=10)
         
-        tk.Label(structure_frame, text=" Template Structure", font=('Segoe UI', 12, 'bold'),
+        tk.Label(structure_frame, text="📋 Template Structure", font=('Segoe UI', 12, 'bold'),
                 bg='white', fg='#1e293b').pack(anchor='w', padx=20, pady=(15, 10))
         
         structure_text = """Required Sheets:
@@ -2517,7 +2517,7 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
         """Replace template Excel with a new file"""
         confirm = messagebox.askyesno(
             "Replace Template",
-            " WARNING\n\n"
+            "⚠️ WARNING\n\n"
             "This will replace the current template file.\n"
             "All new projects will use the new template.\n\n"
             "Existing projects will NOT be affected.\n\n"
@@ -2646,7 +2646,7 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
                 result_text += "\n\n"
             
             if warnings:
-                result_text += " Information:\n"
+                result_text += "ℹ️ Information:\n"
                 result_text += "\n".join(warnings[:10])  # Show first 10
                 if len(warnings) > 10:
                     result_text += f"\n... and {len(warnings) - 10} more"
