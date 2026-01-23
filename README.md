@@ -42,13 +42,12 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 
 ```
 Inspectron1/
-├── user_authentication.py         # Login system and user management
-├── manager_dashboard.py            # Manager analytics and reporting interface
-├── circuit_inspector.py            # Main quality inspection tool
-├── production_tool_highlighter.py  # Production rework interface
+├── login.py                        # Login system and user management
+├── manager.py                      # Manager analytics and reporting interface
+├── quality.py                      # Main quality inspection tool
+├── production.py                   # Production rework interface
 ├── database_manager.py             # SQLite database operations
 ├── handover_database.py (HandoverDB) # Quality-Production workflow management
-├── handover_db_manager.py          # Handover database implementation
 ├── categories.json                 # Defect type definitions
 ├── credentials.json                # User credentials storage
 ├── Emerson.xlsx                    # Master template for Excel files
@@ -62,21 +61,21 @@ Inspectron1/
 ```
 User Authentication (user_authentication.py)
     |
-    +-- Quality Inspector --> circuit_inspector.py (Annotation & Defect Logging)
+    +-- Quality Inspector --> quality.py (Annotation & Defect Logging)
     |                            |
     |                            +-- Highlight defects with OCR extraction
     |                            +-- Log punches to Excel
     |                            +-- Export annotated PDFs
     |                            +-- Handover to Production
     |
-    +-- Production Team --> production_tool_highlighter.py (Rework Management)
+    +-- Production Team --> production.py (Rework Management)
     |                          |
     |                          +-- Review defects highlighted by quality
     |                          +-- Implement fixes
     |                          +-- Mark punches as completed
     |                          +-- Handback to Quality
     |
-    +-- Manager --> manager_dashboard.py (Analytics & Oversight)
+    +-- Manager --> manager.py (Analytics & Oversight)
                         |
                         +-- View cabinet statistics
                         +-- Pareto analysis of defects
@@ -238,7 +237,7 @@ def route_to_role(username, full_name, role):
 
 ---
 
-### 2. circuit_inspector.py - Quality Inspection Tool
+### 2. quality.py - Quality Inspection Tool
 
 **Purpose:** Primary tool for quality inspectors to annotate PDFs, log defects, and manage the inspection workflow.
 
@@ -438,7 +437,7 @@ Reads and writes to Punch Sheet:
 
 ---
 
-### 3. production_tool_highlighter.py - Production Rework Tool
+### 3. production.py - Production Rework Tool
 
 **Purpose:** Allows production team to review quality findings and implement fixes.
 
@@ -539,7 +538,7 @@ Load from Handover Queue
 
 ---
 
-### 4. manager_dashboard.py - Management Analytics
+### 4. manager.py - Management Analytics
 
 **Purpose:** Provides managers and supervisors with project overview and analytics.
 
@@ -1315,17 +1314,6 @@ storage_location/
   - Check manager database for cabinet status
   - Verify handover_db.json for pending items
 
-### Logging and Debugging
-
-Enable verbose output:
-```python
-# Add to any module
-import logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-```
-
----
 
 ## Performance Considerations
 
@@ -1348,32 +1336,14 @@ logger = logging.getLogger(__name__)
 ## Future Enhancements
 
 - Database encryption for credentials
+- Exclusive database management
 - Multi-user concurrent access with locking
 - Cloud storage integration
 - Real-time notifications for handovers
-- Mobile app for production team
 - Advanced analytics and ML-based defect prediction
-- Integration with MES systems
-
----
-
-## Support & Contact
-
-For issues, questions, or contributions:
-- GitHub Issues: https://github.com/Flashhhhh1234/Inspectron1/issues
-- Documentation: This README
-- Development Team: Flashhhhh1234
-
----
-
-## License
-
-Copyright (c) 2026. All rights reserved.
-
----
 
 **Document Version:** 1.0.0  
 **Last Updated:** January 23, 2026  
 **Maintained By:** Development Team
 
-This project is licensed under the [License Name] license - see the [LICENSE.md](LICENSE.md) file for details.
+
