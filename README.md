@@ -39,7 +39,7 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 ### System Flow
 
 ```
-User Authentication (user_authentication.py)
+User Authentication (Login.py)
     |
     +-- Quality Inspector --> quality.py (Annotation & Defect Logging)
     |                            |
@@ -48,19 +48,19 @@ User Authentication (user_authentication.py)
     |                            +-- Export annotated PDFs
     |                            +-- Handover to Production
     |
-    +-- Production Team --> production.py (Rework Management)
-    |                          |
-    |                          +-- Review defects highlighted by quality
-    |                          +-- Implement fixes
-    |                          +-- Mark punches as completed
-    |                          +-- Handback to Quality
+    +-- Production Team ----> production.py (Rework Management)
+    |                           |
+    |                           +-- Review defects highlighted by quality
+    |                           +-- Implement fixes
+    |                           +-- Mark punches as completed
+    |                           +-- Handback to Quality
     |
-    +-- Manager --> manager.py (Analytics & Oversight)
-                        |
-                        +-- View cabinet statistics
-                        +-- Pareto analysis of defects
-                        +-- Category library management
-                        +-- Template Excel configuration
+    +-- Manager ------------> manager.py (Analytics & Oversight)
+                                |
+                                +-- View cabinet statistics
+                                +-- Pareto analysis of defects
+                                +-- Category library management
+                                +-- Template Excel configuration
 ```
 
 ---
@@ -97,36 +97,26 @@ brew install tesseract
 ```
 
 ### Project Setup Steps
+create an "assets" folder , With the categories.json file , credentials.json file, "EmersonLogo.png","text.png","pen.png" , create another folder " pages " and download all the codes inside of it , the database files will autosetup . 
 
-1. **Clone the Repository**
-   ```bash
-   git clone https://github.com/Flashhhhh1234/Inspectron1.git
-   cd Inspectron1
-   ```
-
-2. **Create Assets Directory**
-   ```bash
-   mkdir assets
-   ```
-
-3. **Configure Credentials**
-   - Create `assets/credentials.json` with user accounts:
-   ```json
-   {
-     "users": {
-       "admin": {
-         "password": "admin123",
-         "role": "Admin",
-         "full_name": "Administrator"
-       },
-       "inspector1": {
-         "password": "password123",
-         "role": "Quality",
-         "full_name": "Quality Inspector Name"
-       }
-     }
-   }
-   ```
+### Directory Structure
+```
+Inspectron/
+├── assets/
+|        ├──categories.json
+|        ├── credentials.json
+|        ├── EmersonLogo.png
+|        ├── pen.png
+|        ├── text.png
+|        ├── undo.png
+├── pages/
+         ├──quality.py
+         ├──production.py
+         ├──manager.py
+         ├──database_manager.py
+         ├──handover_database.py
+         ├──Login.py
+```
 
 4. **Set Tesseract Path** (Windows)
    - In `quality.py`, update the path:
@@ -138,14 +128,14 @@ brew install tesseract
 
 5. **Launch Application**
    ```bash
-   python user_authentication.py
+   python Login.py
    ```
 
 ---
 
 ## Core Modules
 
-### 1. user_authentication.py - Authentication & User Management
+### 1. Login.py - Authentication & User Management
 
 **Purpose:** Manages user login, credential validation, and role-based access control.
 
@@ -230,9 +220,15 @@ def route_to_role(username, full_name, role):
 ```python
 def load_pdf():
     """Open and load a PDF file for inspection
-    
-    Prompts user for project details, creates directory structure,
-    and initializes the working Excel file.
+    tries to read project details from the drawings
+    as a fallback-> Prompts user for project details,
+    autoloads a storage location for known project names if not -> creates directory structure,
+    then initializes the working Excel file.
+    the working excel file is an all acessible file where the live changes will be shown and implemented
+
+
+    Another way to load files is using the 
+
     """
 
 def display_page():
@@ -1115,6 +1111,7 @@ storage_location/
          ├──manager.py
          ├──database_manager.py
          ├──handover_database.py
+         ├──Login.py
 ```
 
 
