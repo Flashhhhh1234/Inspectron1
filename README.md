@@ -20,8 +20,6 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 - [Key Features](#key-features)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
-
 ---
 
 ## System Architecture
@@ -1117,70 +1115,24 @@ def verify_production_item(cabinet_id: str, verified_by: str, notes: str) -> boo
 ---
 
 ## Configuration
+to configure create an "assets" folder , With the categories.json file , credentials.json file, "EmersonLogo.png","text.png","pen.png" , create another folder " pages " and download all the codes inside of it , the database files will autosetup . 
 
-### categories.json Structure
-
-```json
-[
-  {
-    "name": "Electrical Defects",
-    "ref_number": "1",
-    "mode": "parent",
-    "subcategories": [
-      {
-        "name": "Wire Connection",
-        "ref_number": "1.1",
-        "inputs": [
-          {"name": "location", "label": "Where is the connection?"},
-          {"name": "issue", "label": "What is the issue?"}
-        ],
-        "template": "Wire connection issue at {location}: {issue}"
-      }
-    ]
-  },
-  {
-    "name": "Wiring Selector",
-    "ref_number": "2",
-    "mode": "wiring_selector",
-    "wiring_types": [
-      {
-        "type": "Power Wiring",
-        "ref_number": "2.1",
-        "subcategories": [...]
-      }
-    ]
-  }
-]
-```
-
-### credentials.json Structure
-
-```json
-{
-  "users": {
-    "username": {
-      "password": "hashed_password",
-      "role": "Quality|Production|Manager|Admin",
-      "full_name": "User Full Name"
-    }
-  }
-}
-```
-
-### Directory Structure (Auto-created)
-
+### Directory Structure
 ```
 storage_location/
-├── Project_Name/
-│   └── CABINET_ID/
-│       ├── Working_Excel/
-│       │   └── CABINET_ID_Working.xlsx
-│       ├── Annotated_Drawings/
-│       │   └── CABINET_ID_Annotated.pdf
-│       ├── Interphase_Export/
-│       │   └── CABINET_ID_Interphase.xlsx
-│       └── Sessions/
-│           └── CABINET_ID_annotations.json
+├── assets/
+|        ├──categories.json
+|        ├── credentials.json
+|        ├── EmersonLogo.png
+|        ├── pen.png
+|        ├── text.png
+|        ├── undo.png
+├── pages/
+         ├──quality.py
+         ├──production.py
+         ├──manager.py
+         ├──database_manager.py
+         ├──handover_database.py
 ```
 
 
