@@ -1,0 +1,535 @@
+[
+  {
+    "name": "Material Shortfall",
+    "mode": "parent",
+    "ref_number": "10",
+    "inputs": [],
+    "template": null,
+    "subcategories": [
+      {
+        "name": "Component Missing",
+	"ref_number": "10",
+        "inputs": [
+          {
+            "name": "Component",
+            "label": "Enter the Component Name/Label that is missing"
+          }
+        ],
+        "template": "{Component} missing"
+      },
+      {
+        "name": "TB Group Missing",
+        "ref_number": "10",
+        "inputs": [
+          {
+            "name": "TB",
+            "label": "Enter the TB group missing"
+          }
+        ],
+        "template": "{TB} missing"
+      },
+      {
+        "name": "Fuse Missing",
+        "ref_number": "17",
+        "inputs": [
+          {
+            "name": "Fuse",
+            "label": "Enter the place where fuse is missing ( Example X-11-F1)"
+          },
+          {
+            "name": "Ex",
+            "label": "Enter the expected fuse Rating and make(optional) seprated by space ( Example-: \"1A/250V Proton\")"
+          }
+        ],
+        "template": "{Fuse} missing. Expected Fuse : {Ex}"
+      },
+      {
+        "name": "Label Missing",
+        "ref_number": "12",
+        "inputs": [
+          {
+            "name": "Label",
+            "label": "Enter Label Name"
+          }
+        ],
+        "template": "{Label} label missing"
+      },
+      {
+        "name": "Endstopper Missing",
+        "ref_number": "10",
+        "inputs": [
+          {
+            "name": "Label",
+            "label": "Enter Component label where endstopper is missing"
+          },
+          {
+            "name": "side",
+            "label": "Enter where is the end stopper missing(Up/Down/Left/Right)"
+          }
+        ],
+        "template": "{side} side endstopper near {Label} missing"
+      },
+      {
+        "name": "Shortlink Missing",
+        "ref_number": "10",
+        "inputs": [
+          {
+            "name": "Label",
+            "label": "Enter the TB group where shortlink is missing"
+          },
+          {
+            "name": "Terminals",
+            "label": "Enter Terminals where shortlink is expected (seprated by commas)"
+          }
+        ],
+        "template": "{Label}-{Terminals} shortlink missing"
+      },
+      {
+        "name": "KLM-A Marker missing",
+        "ref_number": "12",
+        "inputs": [
+          {
+            "name": "KLMA",
+            "label": "Enter the Label name"
+          }
+        ],
+        "template": "{KLMA} KLM-A marker missing"
+      }
+    ]
+  },
+  {
+    "name": "Wrong Wiring",
+    "mode": "wiring_selector",
+    "inputs": [],
+    "template": null,
+    "wiring_types": [
+      {
+        "type": "Power Wiring",
+        "ref_number": "14",
+        "subcategories": [
+          {
+            "name": "Wiring Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component label"
+              },
+              {
+                "name": "terminals",
+                "label": "Enter Terminals (Seprated by commas)"
+              }
+            ],
+            "template": "{TB}-{terminals} wiring wrong as per drawing"
+          },
+          {
+            "name": "Wire size Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component where wire size is wrong"
+              },
+              {
+                "name": "Terminals",
+                "label": "Enter Terminals"
+              }
+            ],
+            "template": "{TB}-{Terminals} wire size wrong as per drawing"
+          },
+          {
+            "name": "Wire Colour Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter the Component label where wire colour is wrong followed by terminals ( Eg. X11-1,2,3)"
+              },
+              {
+                "name": "colour",
+                "label": "Expected wire colour"
+              }
+            ],
+            "template": "{TB} wire colour wrong,Expected wire colour:{colour}"
+          },
+          {
+            "name": "Wire loose found",
+            "inputs": [
+              {
+                "name": "Wire",
+                "label": "Enter the wire that was loose"
+              }
+            ],
+            "template": "{Wire} loose found"
+          },
+          {
+            "name": "Lug not properly cut",
+            "inputs": [
+              {
+                "name": "lug",
+                "label": "Enter the Wire where lug is not properly cut"
+              }
+            ],
+            "template": "{lug} lug not properly cut"
+          }
+        ]
+      },
+      {
+        "type": "I/O Wiring",
+        "ref_number": "15",
+        "subcategories": [
+          {
+            "name": "Wiring Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component label"
+              },
+              {
+                "name": "terminals",
+                "label": "Enter Terminals (Seprated by commas)"
+              }
+            ],
+            "template": "{TB}-{terminals} wiring wrong as per drawing"
+          },
+          {
+            "name": "Wire size Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component where wire size is wrong"
+              },
+              {
+                "name": "Terminals",
+                "label": "Enter Terminals"
+              }
+            ],
+            "template": "{TB}-{Terminals} wire size wrong as per drawing"
+          },
+          {
+            "name": "Wire Colour Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter the Component label where wire colour is wrong followed by terminals ( Eg. X11-1,2,3)"
+              },
+              {
+                "name": "colour",
+                "label": "Expected wire colour"
+              }
+            ],
+            "template": "{TB} wire colour wrong,Expected wire colour:{colour}"
+          },
+          {
+            "name": "Wire loose found",
+            "inputs": [
+              {
+                "name": "Wire",
+                "label": "Enter the wire that was loose"
+              }
+            ],
+            "template": "{Wire} loose found"
+          },
+          {
+            "name": "Lug not properly cut",
+            "inputs": [
+              {
+                "name": "lug",
+                "label": "Enter the Wire where lug is not properly cut"
+              }
+            ],
+            "template": "{lug} lug not properly cut"
+          }
+        ]
+      },
+      {
+        "type": "Ground Wiring",
+        "ref_number": "16",
+        "subcategories": [
+          {
+            "name": "Wiring Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component label"
+              },
+              {
+                "name": "terminals",
+                "label": "Enter Terminals (Seprated by commas)"
+              }
+            ],
+            "template": "{TB}-{terminals} wiring wrong as per drawing"
+          },
+          {
+            "name": "Wire size Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter component where wire size is wrong"
+              },
+              {
+                "name": "Terminals",
+                "label": "Enter Terminals"
+              }
+            ],
+            "template": "{TB}-{Terminals} wire size wrong as per drawing"
+          },
+          {
+            "name": "Wire Colour Wrong",
+            "inputs": [
+              {
+                "name": "TB",
+                "label": "Enter the Component label where wire colour is wrong followed by terminals ( Eg. X11-1,2,3)"
+              },
+              {
+                "name": "colour",
+                "label": "Expected wire colour"
+              }
+            ],
+            "template": "{TB} wire colour wrong,Expected wire colour:{colour}"
+          },
+          {
+            "name": "Wire loose found",
+            "inputs": [
+              {
+                "name": "Wire",
+                "label": "Enter the wire that was loose"
+              }
+            ],
+            "template": "{Wire} loose found"
+          },
+          {
+            "name": "Lug not properly cut",
+            "inputs": [
+              {
+                "name": "lug",
+                "label": "Enter the Wire where lug is not properly cut"
+              }
+            ],
+            "template": "{lug} lug not properly cut"
+          }
+        ]
+      }
+    ],
+    "special_subcategories": [
+      {
+        "name": "Ferrule Wrong",
+        "ref_number": "13",
+        "inputs": [
+          {
+            "name": "Wrong",
+            "label": "Enter the wrong ferrule"
+          },
+          {
+            "name": "Correct",
+            "label": "Enter the correct ferrule"
+          }
+        ],
+        "template": "{Wrong} ferrule wrong, Expected ferrule {Correct}"
+      }
+    ]
+  },
+  {
+    "name": "Wrong Assembly",
+    "mode": "parent",
+    "ref_number": "11",
+    "inputs": [],
+    "template": null,
+    "subcategories": [
+      {
+        "name": "Component Tilt Found",
+        "ref_number": "11",
+        "inputs": [
+          {
+            "name": "Comp",
+            "label": "Enter the Component/Component Label that is tilted"
+          }
+        ],
+        "template": "{Comp} tilt found"
+      },
+      {
+        "name": "Wrong Material Installed",
+        "ref_number": "11",
+        "inputs": [
+          {
+            "name": "Comp",
+            "label": "Enter the Component/Component Label that is wrong"
+          },
+          {
+            "name": "Expected",
+            "label": "Expected:"
+          }
+        ],
+        "template": "{Comp} wrong installed as per drawing/BOM. Expected:{Expected}"
+      },
+      {
+        "name": "Wrong Fuse Installed",
+        "ref_number": "17",
+        "inputs": [
+          {
+            "name": "Fuse",
+            "label": "Enter the Fuse that is wrong"
+          },
+          {
+            "name": "Expected",
+            "label": "Enter Rating and of Fuse required"
+          }
+        ],
+        "template": "{Fuse} wrong installed, Required:{Expected}"
+      },
+      {
+        "name": "Wrong Label installed",
+        "ref_number": "12",
+        "inputs": [
+          {
+            "name": "Label",
+            "label": "Enter the label that is wrong"
+          },
+          {
+            "name": "Expected",
+            "label": "Expected label:"
+          }
+        ],
+        "template": "{Label} Label Wrong. Correct Label : {Expected}"
+      },
+      {
+        "name": "Component loose found",
+        "ref_number": "11",
+        "inputs": [
+          {
+            "name": "comp",
+            "label": "Enter the component/label that was loose"
+          }
+        ],
+        "template": "{comp} loose found"
+      }
+    ]
+  },
+  {
+    "name": "Incomplete wiring",
+    "mode": "wiring_selector",
+    "inputs": [],
+    "template": null,
+    "wiring_types": [
+      {
+        "type": "Power Wiring",
+        "ref_number": "14",
+        "subcategories": [
+          {
+            "name": "All Wiring Incomplete",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} all wiring incomplete with connections pending"
+          },
+          {
+            "name": "Connections Pending",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} connections pending"
+          }
+        ]
+      },
+      {
+        "type": "I/O Wiring",
+        "ref_number": "15",
+        "subcategories": [
+          {
+            "name": "All Wiring Incomplete",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} all wiring incomplete with connections pending"
+          },
+          {
+            "name": "Connections Pending",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} connections pending"
+          }
+        ]
+      },
+      {
+        "type": "Ground Wiring",
+        "ref_number": "16",
+        "subcategories": [
+          {
+            "name": "All Wiring Incomplete",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} all wiring incomplete with connections pending"
+          },
+          {
+            "name": "Connections Pending",
+            "inputs": [
+              {
+                "name": "comp",
+                "label": "Enter Label/Component"
+              }
+            ],
+            "template": "{comp} connections pending"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Design Error",
+    "mode": "parent",
+    "ref_number": "",
+    "inputs": [],
+    "template": null,
+    "subcategories": [
+      {
+        "name": "Missing from Drawing",
+        "ref_number": "",
+        "inputs": [
+          {
+            "name": "comp",
+            "label": "Enter Component that is missing from drawing"
+          }
+        ],
+        "template": "{comp} not in drawing , markup required"
+      },
+      {
+        "name": "Wrong in drawing",
+        "ref_number": "",
+        "inputs": [
+          {
+            "name": "comp",
+            "label": "Enter Label/Component wrong is drawing"
+          }
+        ],
+        "template": "{comp} wrong . drawing needs to be updated"
+      }
+    ]
+  },
+  {
+    "name": "Faulty Equipment",
+    "mode": "template",
+    "ref_number": "19",
+    "inputs": [
+      {
+        "name": "comp",
+        "label": "Enter the component that is faulty"
+      }
+    ],
+    "template": "{comp} not working/faulty. needs to be changed",
+    "subcategories": []
+  }
+]
