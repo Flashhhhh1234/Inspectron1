@@ -1197,7 +1197,6 @@ storage_location/
 ## Security Notes
 
 - Credentials stored in JSON (not encrypted). Use environment variables in production.
-- Handover records stored in JSON. Consider encryption for sensitive data.
 - No authentication between production and quality tools. Use network security.
 - Session files contain all annotation data. Control access to storage locations.
 
