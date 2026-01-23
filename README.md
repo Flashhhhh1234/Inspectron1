@@ -47,13 +47,13 @@ Inspectron1/
 ├── quality.py                      # Main quality inspection tool
 ├── production.py                   # Production rework interface
 ├── database_manager.py             # SQLite database operations
-├── handover_database.py (HandoverDB) # Quality-Production workflow management
+├── handover_database.py            # Quality-Production workflow management
 ├── categories.json                 # Defect type definitions
 ├── credentials.json                # User credentials storage
 ├── Emerson.xlsx                    # Master template for Excel files
 ├── inspection_tool.db              # Quality inspection records
 ├── manager.db                      # Management and analytics data
-└── handover_db.json                # Handover transaction logs
+└── handover.db                     # Handover transaction logs
 ```
 
 ### System Flow
@@ -834,89 +834,7 @@ Cabinet Finalized
 
 ---
 
-## Database Structure
 
-### inspection_tool.db Schema
-
-#### projects table
-```
-cabinet_id (PRIMARY KEY)     - Unique cabinet identifier
-project_name                 - Project name
-sales_order_no              - Sales order reference
-storage_location            - File storage path
-created_date                - Creation timestamp
-last_accessed               - Last access timestamp
-pdf_path                    - Path to PDF file
-excel_path                  - Path to working Excel
-session_path                - Path to annotation session
-status                      - Project status
-notes                       - Additional notes
-```
-
-#### recent_projects table
-```
-id (PRIMARY KEY)            - Auto-increment ID
-cabinet_id (FOREIGN KEY)    - Reference to projects
-last_accessed               - Last access timestamp
-```
-
-### manager.db Schema
-
-#### cabinets table
-```
-cabinet_id (PRIMARY KEY)     - Unique cabinet identifier
-project_name                 - Project name
-sales_order_no              - Sales order reference
-total_pages                 - PDF page count
-annotated_pages             - Pages with annotations
-total_punches               - Total defects logged
-open_punches                - Unresolved defects
-implemented_punches         - Defects being reworked
-closed_punches              - Resolved defects
-status                      - Workflow status
-created_date                - Creation timestamp
-last_updated                - Last modification timestamp
-storage_location            - File storage path
-excel_path                  - Excel file path
-```
-
-#### category_occurrences table
-```
-id (PRIMARY KEY)            - Auto-increment ID
-cabinet_id                  - Cabinet reference
-project_name                - Project reference
-category                    - Defect category
-subcategory                 - Defect subcategory
-occurrence_date             - Log timestamp
-```
-
-### handover_db.json Structure
-
-```json
-{
-  "quality_to_production": [
-    {
-      "cabinet_id": "CAB001",
-      "project_name": "Project Name",
-      "pdf_path": "...",
-      "total_punches": 5,
-      "handed_over_by": "Inspector Name",
-      "handed_over_date": "2026-01-23T14:30:00",
-      "status": "pending"
-    }
-  ],
-  "production_to_quality": [
-    {
-      "cabinet_id": "CAB001",
-      "rework_completed_by": "Production Worker",
-      "rework_completed_date": "2026-01-24T16:45:00",
-      "status": "pending"
-    }
-  ]
-}
-```
-
----
 
 ## User Workflows
 
@@ -1265,54 +1183,6 @@ storage_location/
 │           └── CABINET_ID_annotations.json
 ```
 
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### Issue: Login fails with valid credentials
-- **Cause:** Credentials file not found or corrupted
-- **Solution:** 
-  ```python
-  # Run this to recreate default credentials
-  python user_authentication.py
-  # Admin will be created with default password
-  ```
-
-#### Issue: OCR text extraction returns empty
-- **Cause:** Tesseract not installed or path incorrect
-- **Solution:**
-  - Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
-  - Update path in circuit_inspector.py:
-  ```python
-  pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-  ```
-
-#### Issue: Excel file locked during read/write
-- **Cause:** Excel file open in another application
-- **Solution:** Close the Excel file before saving in the tool
-
-#### Issue: PDF annotations not displaying
-- **Cause:** Session file not found or corrupted
-- **Solution:**
-  - Check Session folder exists at: `storage_location/Project/Cabinet_ID/Sessions/`
-  - Manually delete corrupted session to start fresh
-
-#### Issue: Database error on startup
-- **Cause:** Database file corrupted or permission denied
-- **Solution:**
-  ```bash
-  # Delete corrupted database
-  rm inspection_tool.db
-  # Restart application to recreate fresh database
-  ```
-
-#### Issue: Handover queue shows no items
-- Cause: Items already marked as completed or in different status
-- Solution:
-  - Check manager database for cabinet status
-  - Verify handover_db.json for pending items
 
 
 ## Performance Considerations
