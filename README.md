@@ -1118,29 +1118,6 @@ def verify_production_item(cabinet_id: str, verified_by: str, notes: str) -> boo
 
 ---
 
-## Configuration
-to configure create an "assets" folder , With the categories.json file , credentials.json file, "EmersonLogo.png","text.png","pen.png" , create another folder " pages " and download all the codes inside of it , the database files will autosetup . 
-
-### Directory Structure
-```
-storage_location/
-├── assets/
-|        ├──categories.json
-|        ├── credentials.json
-|        ├── EmersonLogo.png
-|        ├── pen.png
-|        ├── text.png
-|        ├── undo.png
-├── pages/
-         ├──quality.py
-         ├──production.py
-         ├──manager.py
-         ├──database_manager.py
-         ├──handover_database.py
-         ├──Login.py
-```
-
-
 
 ## Performance Considerations
 
