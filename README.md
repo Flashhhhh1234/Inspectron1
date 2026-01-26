@@ -40,7 +40,6 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
   - [Analytics & Reporting](#5-analytics--reporting)
   - [Session Management](#6-session-management)
 - [API Reference](#api-reference)
-- [Configuration](#configuration)
 - [Performance Considerations](#performance-considerations)
 - [Security Notes](#security-notes)
 - [Future Enhancements](#future-enhancements)
