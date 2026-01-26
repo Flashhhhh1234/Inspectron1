@@ -20,13 +20,26 @@ import calendar
 
 
 def get_app_base_dir():
+    """
+    Resolve the base directory of the application.
+
+    Handles both normal Python execution and frozen executables
+    (e.g., PyInstaller builds) to ensure all file paths
+    are resolved relative to the correct runtime location.
+    """
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def get_financial_year():
-    """Get current financial year in format 2026-27 (starts October 1st)"""
+    """
+    Determine the current financial year.
+
+    Financial year is assumed to start on October 1st.
+    Returns a string in the format 'YYYY-YY' (e.g., '2026-27'),
+    which is used across dashboards and analytics.
+    """
     today = datetime.now()
     if today.month >= 10:  # October onwards
         return f"{today.year}-{str(today.year + 1)[-2:]}"
@@ -35,13 +48,33 @@ def get_financial_year():
 
 
 def get_week_number():
-    """Get current week number"""
+    """
+    Return the ISO calendar week number for the current date.
+
+    Used for weekly dashboard statistics and reporting labels.
+    """
     today = datetime.now()
     return today.isocalendar()[1]
 
 
 class ManagerDatabase:
+    """
+    Database access and business logic layer for the Manager Dashboard.
+
+    Responsible for:
+    - SQLite database initialization and queries
+    - Reading punch data from Excel files
+    - Status determination from Interphase sheets
+    - Aggregated statistics for dashboard and analytics views
+    """
     def __init__(self, db_path):
+        """
+        Initialize database connection and Excel column mappings.
+    
+        Also ensures required tables exist and configures
+        punch-sheet column references to stay consistent
+        with the Quality Inspection tool.
+        """
         self.db_path = db_path
         self.init_database()
         
@@ -61,6 +94,13 @@ class ManagerDatabase:
         }
     
     def init_database(self):
+        """
+        Create required SQLite tables if they do not already exist.
+    
+        Tables:
+        - cabinets: cabinet-level tracking and status
+        - category_occurrences: defect category logging for analytics
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -92,7 +132,14 @@ class ManagerDatabase:
         conn.close()
     
     def split_cell(self, cell_ref):
-        """Splits 'F6' -> (6, 'F')"""
+        """
+        Split an Excel-style cell reference into row and column.
+    
+        Example:
+            'F6' → (6, 'F')
+    
+        Used to safely parse dynamic Excel references.
+        """
         import re
         m = re.match(r"([A-Z]+)(\d+)", cell_ref)
         if not m:
@@ -119,8 +166,14 @@ class ManagerDatabase:
         return ws.cell(row=target_row, column=target_col).value
     
     def count_punches_from_excel(self, excel_path):
-        """Count punches directly from Excel file
-        Returns: (total, implemented, closed)
+        """
+        Count punch statistics directly from the Punch Sheet Excel file.
+    
+        Returns:
+            (total_punches, implemented_punches, closed_punches)
+    
+        This ensures dashboard data always reflects the latest Excel state,
+        not stale database values.
         """
         if not excel_path or not os.path.exists(excel_path):
             return (0, 0, 0)
@@ -171,9 +224,16 @@ class ManagerDatabase:
             return (0, 0, 0)
     
     def get_status_from_interphase(self, excel_path):
-        """Read Interphase worksheet and determine status based on reference number
-        Returns: status string or None if not determined from Interphase
         """
+        Determine cabinet workflow status from the Interphase worksheet.
+    
+        Uses the lowest populated reference number to infer
+        the current project phase (assembly, documentation, etc.).
+    
+        Returns:
+            status string or None if unavailable
+        """
+
         if not excel_path or not os.path.exists(excel_path):
             return None
         
@@ -239,6 +299,11 @@ class ManagerDatabase:
             return None
     
     def get_all_projects(self):
+        """
+        Retrieve all projects with cabinet counts and last update timestamps.
+    
+        Used to populate the main dashboard project overview.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''SELECT project_name, COUNT(DISTINCT cabinet_id) as count,
@@ -252,7 +317,14 @@ class ManagerDatabase:
         return projects
     
     def get_cabinets_by_project(self, project_name):
-        """Get cabinets with real-time Excel-based punch counts and status from Interphase"""
+        """
+        Retrieve all cabinets for a project with real-time metrics.
+    
+        Combines:
+        - Database metadata
+        - Live Excel punch counts
+        - Interphase-based status resolution
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''SELECT cabinet_id, project_name, total_pages, annotated_pages,
@@ -297,7 +369,11 @@ class ManagerDatabase:
         return cabinets
     
     def search_projects(self, search_term):
-        """Search projects by name"""
+        """
+        Search projects by name using partial matching.
+    
+        Used by the dashboard search bar for instant filtering.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''SELECT project_name, COUNT(DISTINCT cabinet_id) as count,
@@ -312,7 +388,11 @@ class ManagerDatabase:
         return projects
     
     def get_all_project_names(self):
-        """Get list of all unique project names"""
+        """
+        Return a list of unique project names.
+    
+        Used for analytics auto-suggestions and search hints.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT DISTINCT project_name FROM cabinets ORDER BY project_name')
@@ -321,7 +401,17 @@ class ManagerDatabase:
         return projects
     
     def get_cabinet_statistics(self):
-        """Get cabinet counts for different periods with proper financial year"""
+        """
+        Calculate cabinet counts across time periods.
+    
+        Periods:
+        - Daily
+        - Weekly
+        - Monthly
+        - Financial Year
+    
+        Used for top dashboard statistic cards.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -362,7 +452,15 @@ class ManagerDatabase:
         return stats
     
     def get_category_stats(self, start_date=None, end_date=None, project_name=None):
-        """Get category stats with flexible date filtering"""
+        """
+        Retrieve aggregated defect category statistics.
+    
+        Supports optional filtering by:
+        - Date range
+        - Project name
+    
+        Forms the backend for Pareto charts and exports.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -390,7 +488,25 @@ class ManagerDatabase:
 
 
 class ManagerUI:
+    """
+        Main Tkinter UI controller for the Manager Dashboard.
+    
+        Responsible for:
+        - Navigation and layout
+        - Dashboard rendering
+        - Analytics and charts
+        - Defect Library management
+        - Template Excel management
+    """
     def __init__(self, root):
+        """
+        Initialize the application UI, database, and configuration files.
+    
+        Loads:
+        - SQLite database
+        - Defect categories JSON
+        - Excel template paths
+        """
         self.root = root
         self.root.title("Manager Dashboard")
         self.root.geometry("1600x900")
@@ -405,6 +521,12 @@ class ManagerUI:
         self.show_dashboard()
     
     def load_categories(self):
+        """
+        Load defect categories from JSON storage.
+    
+        Returns an empty list if the file does not exist
+        or cannot be parsed.
+        """
         try:
             if os.path.exists(self.category_file):
                 with open(self.category_file, "r", encoding="utf-8") as f:
@@ -415,6 +537,11 @@ class ManagerUI:
         return []
     
     def save_categories(self):
+        """
+        Persist defect categories to disk in JSON format.
+    
+        Ensures directory creation and safe file writing.
+        """
         try:
             os.makedirs(os.path.dirname(self.category_file), exist_ok=True)
             with open(self.category_file, "w", encoding="utf-8") as f:
@@ -423,6 +550,15 @@ class ManagerUI:
             messagebox.showerror("Error", f"Failed to save:\n{e}")
     
     def setup_ui(self):
+        """
+        Construct the main application layout.
+    
+        Includes:
+        - Top navigation bar
+        - Content container
+        - Navigation buttons
+        """
+        
         # Navigation
         nav = tk.Frame(self.root, bg='#1e293b', height=70)
         nav.pack(side=tk.TOP, fill=tk.X)
@@ -462,15 +598,34 @@ class ManagerUI:
         self.content.pack(fill=tk.BOTH, expand=True)
     
     def set_active_nav(self, key):
+        """
+        Highlight the active navigation button.
+    
+        Provides visual feedback for the current view.
+        """
         for k, btn in self.nav_btns.items():
             btn.config(bg='#3b82f6' if k == key else '#334155')
     
     def clear_content(self):
+        """
+        Remove all widgets from the content area.
+    
+        Used when switching between views.
+        """
+
         for w in self.content.winfo_children():
             w.destroy()
     
     # ============ DASHBOARD - WITH PROPER DATE DISPLAYS AND SEARCH ============
     def show_dashboard(self):
+        """
+        Render the main dashboard view.
+    
+        Displays:
+        - Time-based cabinet statistics
+        - Project list with expandable cabinet details
+        - Search functionality
+        """
         self.set_active_nav('dashboard')
         self.clear_content()
         
@@ -598,7 +753,11 @@ class ManagerUI:
         self.update_project_list(scroll_frame, projects)
     
     def update_project_list(self, scroll_frame, projects):
-        """Update the project list in the dashboard"""
+        """
+        Refresh the project cards displayed on the dashboard.
+
+        Called after searches or data updates.
+        """
         for w in scroll_frame.winfo_children():
             w.destroy()
         
@@ -611,6 +770,11 @@ class ManagerUI:
             self.create_project_card(scroll_frame, proj)
     
     def create_project_card(self, parent, project):
+        """
+        Create a collapsible UI card for a single project.
+    
+        Expands to show cabinet-level information on click.
+        """
         card = tk.Frame(parent, bg='white', relief=tk.SOLID, borderwidth=1)
         card.pack(fill=tk.X, pady=10, padx=5)
         
@@ -647,6 +811,11 @@ class ManagerUI:
         indicator.bind("<Button-1>", lambda e: toggle())
     
     def populate_cabinets(self, parent, project_name):
+        """
+        Populate cabinet rows for a selected project.
+    
+        Includes punch counts, status labels, and Excel links.
+        """
         for w in parent.winfo_children():
             w.destroy()
         
@@ -735,6 +904,7 @@ class ManagerUI:
             # REMOVED Debug button
     
     def open_excel_file(self, excel_path):
+        
         """Open Excel file in default application"""
         if not excel_path or not os.path.exists(excel_path):
             messagebox.showwarning("File Not Found", 
@@ -756,6 +926,14 @@ class ManagerUI:
     
     # ============ ANALYTICS - INTEGRATED SEARCH WITH FILTERS ============
     def show_analytics(self):
+        """
+        Display the Category Analytics view.
+    
+        Includes:
+        - Search with suggestions
+        - Date and level filters
+        - Pareto chart visualization
+        """
         self.set_active_nav('analytics')
         self.clear_content()
         
@@ -790,6 +968,7 @@ class ManagerUI:
         all_projects = self.db.get_all_project_names()
         
         def update_suggestions(*args):
+            
             search_text = search_var.get().lower()
             suggestion_listbox.delete(0, tk.END)
             
@@ -978,7 +1157,12 @@ class ManagerUI:
         search_entry.bind("<Return>", lambda e: apply_filters())
 
     def update_chart_with_filters(self, start_date, end_date, project, level, show_problematic_only=False):
-        """Update chart with filtered data and interactive tooltips"""
+        """
+        Generate and render a Pareto chart based on active filters.
+    
+        Highlights the top 80% contributing categories
+        using cumulative frequency analysis.
+        """
         # Clear previous chart
         for w in self.chart_frame.winfo_children():
             w.destroy()
@@ -1117,7 +1301,14 @@ class ManagerUI:
     
 
     def export_excel_filtered(self):
-        """Export category analytics with current filters to Excel"""
+        """
+        Export analytics data to Excel based on active filters.
+    
+        Automatically selects export format:
+        - Standard
+        - Project-wise
+        - Month-wise
+        """
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1637,6 +1828,12 @@ class ManagerUI:
             ws_sub.column_dimensions[col_letter].width = adjusted_width
     # ============ DEFECT LIBRARY (RENAMED FROM CATEGORIES) ============
     def show_defect_library(self):
+        """
+        Display the Defect Library management interface.
+    
+        Allows creation, editing, deletion, and testing
+        of defect categories and subcategories.
+        """
         self.set_active_nav('defect_library')
         self.clear_content()
         
@@ -1923,7 +2120,14 @@ class ManagerUI:
 
     # Category management methods
     def collect_template_data(self, mandatory=True, existing=None, include_ref=False):
-        """Collect or edit inputs + template + optional ref number."""
+        """
+        Collect structured input data for template-based categories.
+    
+        Supports:
+        - Dynamic inputs
+        - Text templates
+        - Optional reference numbers
+        """
         min_inputs = 1 if mandatory else 0
         default_inputs = len(existing.get("inputs", [])) if existing else min_inputs
         num_inputs = simpledialog.askinteger(
@@ -2352,7 +2556,11 @@ class ManagerUI:
             self.show_defect_library()
 
     def run_template(self, template_def, tag_name=None):
-        """Execute a template definition at runtime"""
+        """
+        Execute a punch text template by prompting the user for inputs.
+    
+        Returns the fully formatted punch text.
+        """
         values = {}
         if tag_name:
             values["tag"] = tag_name
@@ -2398,7 +2606,15 @@ class ManagerUI:
                           f"Category: {category['name']}\nSubcategory: {subcategory['name']}\n\nPunch Text:\n{punch_text}")
     # ============ NEW: TEMPLATE EXCEL EDITOR ============
     def show_template_editor(self):
-        """Template Excel editor interface"""
+        """
+        Display the Template Excel Editor interface.
+    
+        Allows:
+        - Opening the template
+        - Replacing the template
+        - Exporting copies
+        - Verifying structure integrity
+        """
         self.set_active_nav('template_editor')
         self.clear_content()
         
