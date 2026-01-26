@@ -10,16 +10,42 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 
 ---
 
-## Table of Contents
-
+- [Overview](#overview)
 - [System Architecture](#system-architecture)
+  - [Technology Stack](#technology-stack)
+  - [System Flow](#system-flow)
 - [Installation & Setup](#installation--setup)
+  - [Prerequisites](#prerequisites)
+  - [Dependencies Installation](#dependencies-installation)
+  - [Project Setup Steps](#project-setup-steps)
+  - [Directory Structure](#directory-structure)
+  - [Set Tesseract Path (Windows)](#set-tesseract-path-windows)
+  - [Launch Application](#launch-application)
 - [Core Modules](#core-modules)
-- [Database Structure](#database-structure)
+  - [Login.py – Authentication & User Management](#1-loginpy--authentication--user-management)
+  - [quality.py – Quality Inspection Tool](#2-qualitypy--quality-inspection-tool)
+  - [production.py – Production Rework Tool](#3-productionpy--production-rework-tool)
+  - [manager.py – Management Analytics](#4-managerpy--management-analytics)
+  - [database_manager.py – SQLite Database Operations](#5-database_managerpy--sqlite-database-operations)
+  - [handover_database.py – Workflow Management](#6-handover_databasepy-handoverdb--workflow-management)
 - [User Workflows](#user-workflows)
+  - [Quality Inspector Workflow](#quality-inspector-workflow)
+  - [Production Team Workflow](#production-team-workflow)
+  - [Manager Workflow](#manager-workflow)
 - [Key Features](#key-features)
+  - [PDF Annotation System](#1-pdf-annotation-system)
+  - [Optical Character Recognition (OCR)](#2-optical-character-recognition-ocr)
+  - [Excel Integration](#3-excel-integration)
+  - [Workflow Management](#4-workflow-management)
+  - [Analytics & Reporting](#5-analytics--reporting)
+  - [Session Management](#6-session-management)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
+- [Performance Considerations](#performance-considerations)
+- [Security Notes](#security-notes)
+- [Future Enhancements](#future-enhancements)
+- [Document Metadata](#document-metadata)
+
 ---
 
 ## System Architecture
