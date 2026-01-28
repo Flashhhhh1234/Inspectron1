@@ -27,15 +27,15 @@ import io
 import re
 import sys
 
-LOGGED_IN_USERNAME = sys.argv[1] if len(sys.argv) > 1 else None
-LOGGED_IN_FULLNAME = sys.argv[2] if len(sys.argv) > 2 else None
+User = sys.argv[1] if len(sys.argv) > 1 else None
+Name = sys.argv[2] if len(sys.argv) > 2 else None
 
-TESSERACT_PATH = r"C:\Users\E1547548\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+path = r"C:\Users\E1547548\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-if os.path.exists(TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+if os.path.exists(path):
+    pytesseract.pytesseract.tesseract_cmd = path
     
-def get_app_base_dir():
+def base():
     """Returns the directory where the app is running from."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
@@ -47,12 +47,12 @@ def get_app_base_dir():
 
 
 class ManagerDB:
-    """Manager database integration with storage_location and excel_path support used for updating and syncing stats with the dashboard"""
-    def __init__(self, db_path):
+    """Manager database integration with storage_location and excel_path support"""
+    def initialize(self, db_path):
         self.db_path = db_path
-        self.init_database()
+        self.initializedb()
     
-    def init_database(self):
+    def initializedb(self):
         """Initialize tables if they don't exist"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -97,7 +97,7 @@ class ManagerDB:
         conn.commit()
         conn.close()
 
-    def split_cell(self, cell_ref):
+    def splitcell(self, cell_ref):
         
         import re
         m = re.match(r"([A-Z]+)(\d+)", cell_ref)
@@ -106,14 +106,14 @@ class ManagerDB:
         col, row = m.groups()
         return int(row), col
 
-    def _resolve_merged_target(self, ws, row, col_idx):
+    def mergedtar(self, ws, row, col_idx):
         """Handle merged cells"""
         for merged in ws.merged_cells.ranges:
             if merged.min_row <= row <= merged.max_row and merged.min_col <= col_idx <= merged.max_col:
                 return merged.min_row, merged.min_col
         return row, col_idx
 
-    def read_cell(self, ws, row, col):
+    def read(self, ws, row, col):
         """Read cell value handling merged cells"""
         from openpyxl.utils import column_index_from_string
         
@@ -121,10 +121,10 @@ class ManagerDB:
             col_idx = column_index_from_string(col)
         else:
             col_idx = int(col)
-        target_row, target_col = self._resolve_merged_target(ws, int(row), col_idx)
+        target_row, target_col = self.mergedtar(ws, int(row), col_idx)
         return ws.cell(row=target_row, column=target_col).value
 
-    def get_status_from_interphase(self, excel_path):
+    def interphase_status(self, excel_path):
         """Read Interphase worksheet and determine status based on HIGHEST filled reference number
         
         Returns: status string or None if not determined from Interphase
@@ -147,11 +147,11 @@ class ManagerDB:
             
             # Start from row 11 (typical Interphase data starts here)
             for row in range(11, ws.max_row + 1):
-                status_cell = self.read_cell(ws, row, 'D')  # Status column
+                status_cell = self.read(ws, row, 'D')  # Status column
                 
                 # If status cell has content, check the reference number
                 if status_cell and str(status_cell).strip():
-                    ref_no_cell = self.read_cell(ws, row, 'B')  # Reference column
+                    ref_no_cell = self.read(ws, row, 'B')  # Reference column
                     
                     if ref_no_cell:
                         try:
@@ -192,7 +192,7 @@ class ManagerDB:
             print(f"Error reading Interphase worksheet: {e}")
             return None
     
-    def update_cabinet(self, cabinet_id, project_name, sales_order_no, 
+    def updatecab(self, cabinet_id, project_name, sales_order_no, 
                       total_pages, annotated_pages, total_punches, 
                       open_punches, implemented_punches, closed_punches, status,
                       storage_location=None, excel_path=None):
@@ -222,7 +222,7 @@ class ManagerDB:
             print(f"Manager DB update error: {e}")
             return False
     
-    def log_category_occurrence(self, cabinet_id, project_name, category, subcategory):
+    def logcatoccurence(self, cabinet_id, project_name, category, subcategory):
         """Log a category occurrence"""
         try:
             conn = sqlite3.connect(self.db_path)
@@ -241,7 +241,7 @@ class ManagerDB:
             print(f"Category logging error: {e}")
             return False
     
-    def update_status(self, cabinet_id, status):
+    def updatestats(self, cabinet_id, status):
         """Update cabinet status only"""
         try:
             conn = sqlite3.connect(self.db_path)
@@ -260,7 +260,7 @@ class ManagerDB:
             print(f"Status update error: {e}")
             return False
     
-    def get_cabinet(self, cabinet_id):
+    def fetchcab(self, cabinet_id):
         """Get cabinet information"""
         try:
             conn = sqlite3.connect(self.db_path)
@@ -302,16 +302,16 @@ class ManagerDB:
 
 
 class CircuitInspector:
-    def __init__(self, root):
+    def initialize(self, root):
         self.root = root
-        self.logged_in_username = LOGGED_IN_USERNAME
-        self.logged_in_fullname = LOGGED_IN_FULLNAME
+        self.logged_in_username = User
+        self.logged_in_fullname = Name
         self.root.title("Quality Inspection Tool - Highlighter")
         self.root.geometry("1400x900")
 
 
         # Bind window close event to auto-save
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.protocol("WM_DELETE_WINDOW", self.onclosing)
         # Data / files
         self.pdf_document = None
         self.current_pdf_path = None
@@ -320,7 +320,7 @@ class CircuitInspector:
         self.sales_order_no = ""
         self.cabinet_id = ""
         self.annotations = []
-        base = get_app_base_dir()
+        base = base()
         self.master_excel_file = os.path.join(base, "Emerson.xlsx")
 
         self.excel_file = None
@@ -373,8 +373,8 @@ class CircuitInspector:
         }
 
         self.categories = []
-        self.category_file = os.path.join(os.path.dirname(get_app_base_dir()), "assets", "categories.json")
-        self.load_categories()
+        self.category_file = os.path.join(os.path.dirname(base()), "assets", "categories.json")
+        self.loadcat()
 
         # HIGHLIGHTER STATE - 3 COLORS
         self.active_highlighter = None
@@ -395,16 +395,16 @@ class CircuitInspector:
         self.max_undo = 50    # Maximum undo history
         self.hover_annotation = None  # For hover preview
 
-        self.setup_ui()
-        self.current_sr_no = self.get_next_sr_no()
+        self.uisetup()
+        self.current_sr_no = self.getnextsr()
         
-        base = get_app_base_dir()
+        base = base()
         db_path = os.path.join(base, "inspection_tool.db")
         self.db = DatabaseManager(db_path)
         manager_db_path = os.path.join(base, "manager.db")
         self.manager_db = ManagerDB(manager_db_path)
-        self.handover_db = HandoverDB(os.path.join(base, "handover.db"))
-        self.load_recent_projects_ui()
+        self.handover_db = HandoverDB(os.path.join(base, "handover_db.json"))
+        self.loadrecprojui()
 
 
     # ================================================================
@@ -452,7 +452,7 @@ class CircuitInspector:
     # HIGHLIGHTER HELPER - AUTO-STRAIGHTEN
     # ================================================================
     
-    def straighten_path(self, points):
+    def Straighten(self, points):
         """Convert a freehand path into a straight line from start to end."""
         if len(points) < 2:
             return points
@@ -463,7 +463,7 @@ class CircuitInspector:
     # MOUSE EVENT HANDLERS - HIGHLIGHTER INTEGRATED
     # ================================================================
 
-    def on_left_press(self, event):
+    def leftclick(self, event):
         """Handle left mouse button press"""
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -477,7 +477,7 @@ class CircuitInspector:
             self.drawing = True
             self.drawing_type = "highlight"
             self.highlight_points = [(x, y)]
-            self.clear_temp_drawings()
+            self.cleartemp()
             return
 
         # -------- PEN TOOL --------
@@ -485,7 +485,7 @@ class CircuitInspector:
             self.drawing = True
             self.drawing_type = "pen"
             self.pen_points = [(x, y)]
-            self.clear_temp_drawings()
+            self.cleartemp()
             return
 
         # -------- TEXT TOOL --------
@@ -496,7 +496,7 @@ class CircuitInspector:
             self.text_pos_y = y
             return
 
-    def on_left_drag(self, event):
+    def leftdrag(self, event):
         """Handle left mouse button drag"""
         if not self.drawing:
             return
@@ -540,7 +540,7 @@ class CircuitInspector:
             self.pen_points.append((x, y))
             return
 
-    def on_left_release_with_ocr(self, event):
+    def leftrel(self, event):
         """Handle left mouse button release with OCR text extraction"""
         if not self.pdf_document or not self.drawing:
             return
@@ -549,7 +549,7 @@ class CircuitInspector:
         if self.drawing_type == "highlight":
             if len(self.highlight_points) >= 2:
                 # ALWAYS apply straightening for highlighter
-                processed_points = self.straighten_path(self.highlight_points)
+                processed_points = self.Straighten(self.highlight_points)
                 
                 # Convert to page coordinates
                 points_page = self.display_to_page_coords(processed_points)
@@ -569,9 +569,9 @@ class CircuitInspector:
                     'timestamp': datetime.now().isoformat()
                 }
                 
-                # Extract text from highlighted area if orange highlighter
+                # NEW: Extract text from highlighted area if orange highlighter
                 if self.active_highlighter == 'orange':
-                    extracted_text = self.extract_text_from_highlight_area(annotation)
+                    extracted_text = self.exctracttxt(annotation)
                     
                     if extracted_text:
                         annotation['extracted_text'] = extracted_text
@@ -581,18 +581,18 @@ class CircuitInspector:
                         
                     
                     # Show action menu with extracted text
-                    self.handle_error_highlight_with_ocr(annotation)
+                    self.errorhighlight(annotation)
                 else:
                     # Green/Yellow highlighters - no OCR, just add annotation
                     self.annotations.append(annotation)
-                    self.add_to_undo_stack('add_annotation', annotation)
-                    self.display_page()
+                    self.addtostack('add_annotation', annotation)
+                    self.display()
             
             self.highlight_points = []
-            self.clear_temp_drawings()
+            self.cleartemp()
             self.drawing = False
             self.drawing_type = None
-            self.update_tool_pane()
+            self.updtoolpane()
             return
 
         # -------- PEN TOOL FINISH - NO CHANGES --------
@@ -606,13 +606,13 @@ class CircuitInspector:
                     'timestamp': datetime.now().isoformat()
                 }
                 self.annotations.append(annotation)
-                self.add_to_undo_stack('add_annotation', annotation)
+                self.addtostack('add_annotation', annotation)
             self.pen_points = []
-            self.clear_temp_drawings()
+            self.cleartemp()
             self.drawing = False
             self.drawing_type = None
-            self.display_page()
-            self.update_tool_pane()
+            self.display()
+            self.updtoolpane()
             return
 
         # -------- TEXT TOOL FINISH - NO CHANGES --------
@@ -628,11 +628,11 @@ class CircuitInspector:
                     'timestamp': datetime.now().isoformat()
                 }
                 self.annotations.append(annotation)
-                self.add_to_undo_stack('add_annotation', annotation)
-                self.display_page()
+                self.addtostack('add_annotation', annotation)
+                self.display()
             self.drawing = False
             self.drawing_type = None
-            self.update_tool_pane()
+            self.updtoolpane()
             return
 
 
@@ -640,7 +640,7 @@ class CircuitInspector:
     # MODIFIED: handle_error_highlight with OCR pre-filled text
     # Replace your existing handle_error_highlight method
     # ============================================================================
-    def load_categories(self):
+    def loadcat(self):
         """Load categories from JSON"""
         try:
             if os.path.exists(self.category_file):
@@ -663,7 +663,7 @@ class CircuitInspector:
     """
 
 
-    def extract_text_from_highlight_area(self, annotation):
+    def exctracttxt(self, annotation):
         """Extract text from highlighted area with automatic padding and rotation support - OPTIMIZED"""
         if self.current_page_image is None:
             return None
@@ -712,14 +712,14 @@ class CircuitInspector:
             
             # Smart rotation strategy: Try 0° first (most common), then others only if needed
             # First try: Normal orientation (0°)
-            text, confidence = self._ocr_with_confidence(pil_img)
+            text, confidence = self.ocrcon(pil_img)
             
             # If confidence is high enough (>60%), accept immediately
             if confidence > 60 and text:
-                cleaned_text = self.clean_ocr_text(text)
+                cleaned_text = self.cleantxt(text)
                 if cleaned_text and len(cleaned_text) > 1:
                     # CHECK IF TEXT IS ALL CAPS
-                    if self._is_all_caps(cleaned_text):
+                    if self.caps(cleaned_text):
                         print(f" Extracted (0°, {confidence:.1f}%): '{cleaned_text}'")
                         return cleaned_text
                     else:
@@ -738,7 +738,7 @@ class CircuitInspector:
             ]
             
             for angle, rotated_img, label in rotations:
-                text, conf = self._ocr_with_confidence(rotated_img)
+                text, conf = self.ocrcon(rotated_img)
                 
                 if conf > best_confidence:
                     best_confidence = conf
@@ -753,11 +753,11 @@ class CircuitInspector:
                 if best_rotation != 0:
                     print(f" Best: {best_rotation}° ({best_confidence:.1f}%)")
                 
-                cleaned_text = self.clean_ocr_text(best_text)
+                cleaned_text = self.cleantxt(best_text)
                 
                 if cleaned_text and len(cleaned_text) > 1:
                     #CHECK IF TEXT IS ALL CAPS
-                    if self._is_all_caps(cleaned_text):
+                    if self.caps(cleaned_text):
                         print(f" Extracted: '{cleaned_text}'")
                         return cleaned_text
                     else:
@@ -772,7 +772,7 @@ class CircuitInspector:
             return None
 
 
-    def _is_all_caps(self, text):
+    def caps(self, text):
         """
         Check if text is in all caps (ignoring non-letter characters)
         
@@ -796,7 +796,7 @@ class CircuitInspector:
         return all(char.isupper() for char in letters)
 
 
-    def _ocr_with_confidence(self, pil_image):
+    def ocrcon(self, pil_image):
         """
         Helper method to run OCR and calculate confidence
         
@@ -838,7 +838,7 @@ class CircuitInspector:
             return None, 0
 
 
-    def clean_ocr_text(self, text):
+    def cleantxt(self, text):
         """
         Clean OCR output text - optimized version
         
@@ -874,7 +874,7 @@ class CircuitInspector:
         # SIMPLIFIED VERSION - If the above is too complex
         # ============================================================================
 
-    def extract_text_simple(self, annotation):
+    def extracttxtsimple(self, annotation):
         """
         Simplified OCR extraction - Just upscale and try
         """
@@ -905,7 +905,7 @@ class CircuitInspector:
             print(f"Cropped area: {cropped.shape}")
             
             if cropped.size == 0:
-                print("Empty crop")
+                print("❌ Empty crop")
                 return None
             
             # Upscale 3x for better OCR
@@ -936,7 +936,7 @@ class CircuitInspector:
             
             if text and len(text) > 1:
                 #  CHECK IF TEXT IS ALL CAPS
-                if self._is_all_caps(text):
+                if self.caps(text):
                     print(f" Extracted: '{text}'")
                     return text
                 else:
@@ -953,7 +953,7 @@ class CircuitInspector:
             return None
         
 
-    def preprocess_for_ocr(self, pil_image):
+    def preocr(self, pil_image):
         """
         Preprocess image for better OCR accuracy
         
@@ -987,7 +987,7 @@ class CircuitInspector:
         # Convert back to PIL
         return Image.fromarray(denoised)
 
-    def handle_error_highlight_with_ocr(self, annotation):
+    def errorhighlight(self, annotation):
         """Handle orange error highlight with OCR-extracted text pre-filled"""
         
         extracted_text = annotation.get('extracted_text', None)
@@ -1002,7 +1002,7 @@ class CircuitInspector:
                 menu.add_command(
                     label=f" {cat['name']}",
                     command=lambda c=cat, ann=annotation, txt=extracted_text: 
-                        self.handle_wiring_selector_with_ocr(c, ann, txt)
+                        self.wiringselocr(c, ann, txt)
                 )
             
             # ========== TEMPLATE MODE ==========
@@ -1016,7 +1016,7 @@ class CircuitInspector:
                 menu.add_command(
                     label=label,
                     command=lambda c=cat, ann=annotation, txt=extracted_text: 
-                        self.handle_template_category_highlight_with_ocr(c, ann, txt)
+                        self.handlecat(c, ann, txt)
                 )
             
             # ========== PARENT MODE ==========
@@ -1031,7 +1031,7 @@ class CircuitInspector:
                     cat_menu.add_command(
                         label=label,
                         command=lambda c=cat, s=sub, ann=annotation, txt=extracted_text: 
-                            self.handle_subcategory_highlight_with_ocr(c, s, ann, txt)
+                            self.handlesub(c, s, ann, txt)
                     )
                 
                 menu.add_cascade(label=f" {cat['name']}", menu=cat_menu)
@@ -1040,7 +1040,7 @@ class CircuitInspector:
         menu.add_command(
             label=" Custom Action Point",
             command=lambda ann=annotation, txt=extracted_text: 
-                self.log_custom_error_highlight_with_ocr(ann, txt)
+                self.logcustomerr(ann, txt)
         )
 
         x = self.root.winfo_pointerx()
@@ -1053,7 +1053,7 @@ class CircuitInspector:
     # Add this helper method to your class
     # ============================================================================
 
-    def run_template_with_ocr(self, template_def, tag_name=None, prefill_text=None):
+    def runtemp(self, template_def, tag_name=None, prefill_text=None):
         """
         Execute a template definition with OCR text pre-filled
         
@@ -1101,7 +1101,7 @@ class CircuitInspector:
     # Add these to your CircuitInspector class
     # ============================================================================
 
-    def handle_wiring_selector_with_ocr(self, category, annotation, extracted_text):
+    def wiringselocr(self, category, annotation, extracted_text):
         """Handle wiring type selection with OCR text"""
         wiring_menu = Menu(self.root, tearoff=0, bg='#1e293b', fg='white',
                           activebackground='#3b82f6', font=('Segoe UI', 10))
@@ -1115,7 +1115,7 @@ class CircuitInspector:
             wiring_menu.add_command(
                 label=f"[{ref_num}] {wiring_type}",
                 command=lambda c=category, w=wiring, ann=annotation, txt=extracted_text: 
-                    self.show_wiring_subcategories_with_ocr(c, w, ann, txt)
+                    self.showwiringsub(c, w, ann, txt)
             )
         
         special_subs = category.get("special_subcategories", [])
@@ -1126,7 +1126,7 @@ class CircuitInspector:
                 wiring_menu.add_command(
                     label=f"[{ref_num}] {special['name']} (All types)",
                     command=lambda c=category, s=special, ann=annotation, txt=extracted_text:
-                        self.handle_special_subcategory_with_ocr(c, s, ann, txt)
+                        self.splcat(c, s, ann, txt)
                 )
         
         x = self.root.winfo_pointerx()
@@ -1134,12 +1134,12 @@ class CircuitInspector:
         wiring_menu.tk_popup(x, y)
 
 
-    def show_wiring_subcategories_with_ocr(self, category, wiring_data, annotation, extracted_text):
+    def showwiringsub(self, category, wiring_data, annotation, extracted_text):
         """Show sub-subcategories with OCR text"""
         subcategories = wiring_data.get("subcategories", [])
         
         if not subcategories:
-            self.handle_wiring_type_selected_with_ocr(category, wiring_data, annotation, extracted_text)
+            self.wiringtype(category, wiring_data, annotation, extracted_text)
             return
         
         sub_menu = Menu(self.root, tearoff=0, bg='#1e293b', fg='white',
@@ -1153,7 +1153,7 @@ class CircuitInspector:
             sub_menu.add_command(
                 label=f"[{ref_num}] {sub_name}",
                 command=lambda c=category, w=wiring_data, s=sub, ann=annotation, txt=extracted_text:
-                    self.handle_wiring_subcategory_selected_with_ocr(c, w, s, ann, txt)
+                    self.hnadlwiringsub(c, w, s, ann, txt)
             )
         
         x = self.root.winfo_pointerx()
@@ -1161,10 +1161,10 @@ class CircuitInspector:
         sub_menu.tk_popup(x, y)
 
 
-    def handle_wiring_subcategory_selected_with_ocr(self, category, wiring_data, subcategory, annotation, extracted_text):
+    def hnadlwiringsub(self, category, wiring_data, subcategory, annotation, extracted_text):
         """Handle wiring subcategory with OCR pre-fill"""
         
-        punch_text = self.run_template_with_ocr(subcategory, tag_name=None, prefill_text=extracted_text)
+        punch_text = self.runtemp(subcategory, tag_name=None, prefill_text=extracted_text)
         if not punch_text:
             return
         
@@ -1172,7 +1172,7 @@ class CircuitInspector:
         wiring_type = wiring_data.get("type", "Unknown")
         sub_name = subcategory.get("name", "Unknown")
         
-        self.log_error_direct(
+        self.logerrdirect(
             component_type=category["name"],
             error_name=f"{wiring_type} - {sub_name}",
             error_template=punch_text,
@@ -1181,16 +1181,16 @@ class CircuitInspector:
         )
 
 
-    def handle_template_category_highlight_with_ocr(self, category, annotation, extracted_text):
+    def handlecat(self, category, annotation, extracted_text):
         """Handle template category with OCR pre-fill"""
-        punch_text = self.run_template_with_ocr(category, tag_name=None, prefill_text=extracted_text)
+        punch_text = self.runtemp(category, tag_name=None, prefill_text=extracted_text)
         if not punch_text:
             return
         
         ref_number = category.get("ref_number", "")
         
         if ref_number:
-            self.log_error_direct(
+            self.logerrdirect(
                 component_type=category["name"],
                 error_name=None,
                 error_template=punch_text,
@@ -1198,7 +1198,7 @@ class CircuitInspector:
                 ref_number=ref_number
             )
         else:
-            self.log_error_with_popup(
+            self.logerrwithref(
                 component_type=category["name"],
                 error_name=None,
                 error_template=punch_text,
@@ -1206,16 +1206,16 @@ class CircuitInspector:
             )
 
 
-    def handle_subcategory_highlight_with_ocr(self, category, subcategory, annotation, extracted_text):
+    def handlesub(self, category, subcategory, annotation, extracted_text):
         """Handle subcategory with OCR pre-fill"""
-        punch_text = self.run_template_with_ocr(subcategory, tag_name=None, prefill_text=extracted_text)
+        punch_text = self.runtemp(subcategory, tag_name=None, prefill_text=extracted_text)
         if not punch_text:
             return
         
         ref_number = subcategory.get("ref_number", "")
         
         if ref_number:
-            self.log_error_direct(
+            self.logerrdirect(
                 component_type=category["name"],
                 error_name=subcategory["name"],
                 error_template=punch_text,
@@ -1223,7 +1223,7 @@ class CircuitInspector:
                 ref_number=ref_number
             )
         else:
-            self.log_error_with_popup(
+            self.logerrwithref(
                 component_type=category["name"],
                 error_name=subcategory["name"],
                 error_template=punch_text,
@@ -1231,7 +1231,7 @@ class CircuitInspector:
             )
 
 
-    def log_error_direct(self, component_type, error_name, error_template, annotation, ref_number):
+    def logerrdirect(self, component_type, error_name, error_template, annotation, ref_number):
         """Log error DIRECTLY without asking for reference number"""
         punch_text = error_template
 
@@ -1249,36 +1249,36 @@ class CircuitInspector:
 
             row_num = 8
             while True:
-                val = self.read_cell(ws, row_num, self.punch_cols['sr_no'])
+                val = self.readcell(ws, row_num, self.punch_cols['sr_no'])
                 if val is None:
                     break
                 row_num += 1
 
             prev_sr = None
             if row_num > 8:
-                prev_sr = self.read_cell(ws, row_num - 1, self.punch_cols['sr_no'])
+                prev_sr = self.readcell(ws, row_num - 1, self.punch_cols['sr_no'])
 
             try:
                 sr_no_assigned = int(prev_sr) + 1 if prev_sr is not None else 1
             except:
                 sr_no_assigned = 1
 
-            self.write_cell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
-            self.write_cell(ws, row_num, self.punch_cols['ref_no'], ref_no)
-            self.write_cell(ws, row_num, self.punch_cols['desc'], punch_text)
-            self.write_cell(ws, row_num, self.punch_cols['category'], component_type)
+            self.writecell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
+            self.writecell(ws, row_num, self.punch_cols['ref_no'], ref_no)
+            self.writecell(ws, row_num, self.punch_cols['desc'], punch_text)
+            self.writecell(ws, row_num, self.punch_cols['category'], component_type)
 
             uname = self.logged_in_fullname or "Unknown User"
 
-            self.write_cell(ws, row_num, self.punch_cols['checked_name'], uname)
+            self.writecell(ws, row_num, self.punch_cols['checked_name'], uname)
             # Updated to include timestamp + date
-            self.write_cell(ws, row_num, self.punch_cols['checked_date'], 
+            self.writecell(ws, row_num, self.punch_cols['checked_date'], 
                           datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
             wb.save(self.excel_file)
             wb.close()
 
-            updated = self.update_interphase_status_for_ref(ref_no, status='NOK')
+            updated = self.updatestatsforref(ref_no, status='NOK')
             if updated:
                 print(f"✓ Interphase: marked ref {ref_no} as NOK")
 
@@ -1296,16 +1296,16 @@ class CircuitInspector:
 
             # Add to annotations list
             self.annotations.append(annotation)
-            self.current_sr_no = self.get_next_sr_no()
+            self.current_sr_no = self.getnextsr()
             
             # Redraw to show the color change from orange to red
-            self.display_page()
+            self.display()
 
             print(f" Logged: Ref {ref_no}, SR {sr_no_assigned}")
-            self._flash_status(f" Logged Ref {ref_no}", bg='#10b981')
+            self.flashstat(f" Logged Ref {ref_no}", bg='#10b981')
             
             try:
-                self.manager_db.log_category_occurrence(
+                self.manager_db.logcatoccurence(
                     self.cabinet_id,
                     self.project_name,
                     component_type,
@@ -1323,7 +1323,7 @@ class CircuitInspector:
             traceback.print_exc()
 
 
-    def log_error_with_popup(self, component_type, error_name, error_template, annotation):
+    def logerrwithref(self, component_type, error_name, error_template, annotation):
         """Log error WITH popup (for Design Error only)"""
         punch_text = error_template
 
@@ -1350,36 +1350,36 @@ class CircuitInspector:
 
             row_num = 8
             while True:
-                val = self.read_cell(ws, row_num, self.punch_cols['sr_no'])
+                val = self.readcell(ws, row_num, self.punch_cols['sr_no'])
                 if val is None:
                     break
                 row_num += 1
 
             prev_sr = None
             if row_num > 8:
-                prev_sr = self.read_cell(ws, row_num - 1, self.punch_cols['sr_no'])
+                prev_sr = self.readcell(ws, row_num - 1, self.punch_cols['sr_no'])
 
             try:
                 sr_no_assigned = int(prev_sr) + 1 if prev_sr is not None else 1
             except:
                 sr_no_assigned = 1
 
-            self.write_cell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
-            self.write_cell(ws, row_num, self.punch_cols['ref_no'], ref_no)
-            self.write_cell(ws, row_num, self.punch_cols['desc'], punch_text)
-            self.write_cell(ws, row_num, self.punch_cols['category'], component_type)
+            self.writecell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
+            self.writecell(ws, row_num, self.punch_cols['ref_no'], ref_no)
+            self.writecell(ws, row_num, self.punch_cols['desc'], punch_text)
+            self.writecell(ws, row_num, self.punch_cols['category'], component_type)
 
             uname = self.logged_in_fullname or "Unknown User"
 
-            self.write_cell(ws, row_num, self.punch_cols['checked_name'], uname)
+            self.writecell(ws, row_num, self.punch_cols['checked_name'], uname)
             # Updated to include timestamp + date
-            self.write_cell(ws, row_num, self.punch_cols['checked_date'], 
+            self.writecell(ws, row_num, self.punch_cols['checked_date'], 
                           datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
             wb.save(self.excel_file)
             wb.close()
 
-            updated = self.update_interphase_status_for_ref(ref_no, status='NOK')
+            updated = self.updatestatsforref(ref_no, status='NOK')
             if updated:
                 print(f"Interphase: marked ref {ref_no} as NOK")
 
@@ -1395,14 +1395,14 @@ class CircuitInspector:
             annotation['implementation_remark'] = None
 
             self.annotations.append(annotation)
-            self.current_sr_no = self.get_next_sr_no()
-            self.display_page()
+            self.current_sr_no = self.getnextsr()
+            self.display()
 
             print(f" Logged: Ref {ref_no}, SR {sr_no_assigned}")
-            self._flash_status(f" Logged Ref {ref_no}", bg='#10b981')
+            self.flashstat(f" Logged Ref {ref_no}", bg='#10b981')
             
             try:
-                self.manager_db.log_category_occurrence(
+                self.manager_db.logcatoccurence(
                     self.cabinet_id,
                     self.project_name,
                     component_type,
@@ -1420,7 +1420,7 @@ class CircuitInspector:
             traceback.print_exc()
 
 
-    def log_custom_error_highlight_with_ocr(self, annotation, extracted_text):
+    def logcustomerr(self, annotation, extracted_text):
         """Log custom error with OCR pre-fill"""
         try:
             # Pre-fill with OCR text
@@ -1460,30 +1460,30 @@ class CircuitInspector:
 
             row_num = 8
             while True:
-                val = self.read_cell(ws, row_num, self.punch_cols['sr_no'])
+                val = self.readcell(ws, row_num, self.punch_cols['sr_no'])
                 if val is None:
                     break
                 row_num += 1
 
             prev_sr = None
             if row_num > 8:
-                prev_sr = self.read_cell(ws, row_num - 1, self.punch_cols['sr_no'])
+                prev_sr = self.readcell(ws, row_num - 1, self.punch_cols['sr_no'])
 
             try:
                 sr_no_assigned = int(prev_sr) + 1 if prev_sr is not None else 1
             except:
                 sr_no_assigned = 1
 
-            self.write_cell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
-            self.write_cell(ws, row_num, self.punch_cols['ref_no'], ref_no)
-            self.write_cell(ws, row_num, self.punch_cols['desc'], custom_action)
-            self.write_cell(ws, row_num, self.punch_cols['category'], custom_category)
+            self.writecell(ws, row_num, self.punch_cols['sr_no'], sr_no_assigned)
+            self.writecell(ws, row_num, self.punch_cols['ref_no'], ref_no)
+            self.writecell(ws, row_num, self.punch_cols['desc'], custom_action)
+            self.writecell(ws, row_num, self.punch_cols['category'], custom_category)
 
             uname = self.logged_in_fullname or "Unknown User"
 
-            self.write_cell(ws, row_num, self.punch_cols['checked_name'], uname)
+            self.writecell(ws, row_num, self.punch_cols['checked_name'], uname)
             # Updated to include timestamp + date
-            self.write_cell(ws, row_num, self.punch_cols['checked_date'], 
+            self.writecell(ws, row_num, self.punch_cols['checked_date'], 
                           datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
             wb.save(self.excel_file)
@@ -1498,14 +1498,14 @@ class CircuitInspector:
             annotation['timestamp'] = datetime.now().isoformat()
 
             self.annotations.append(annotation)
-            self.current_sr_no = self.get_next_sr_no()
-            self.display_page()
+            self.current_sr_no = self.getnextsr()
+            self.display()
 
-            print(f"Logged custom: Ref {ref_no}, SR {sr_no_assigned}")
-            self._flash_status(f"✓ Custom punch Ref {ref_no}", bg='#8b5cf6')
+            print(f"✓ Logged custom: Ref {ref_no}, SR {sr_no_assigned}")
+            self.flashstat(f"✓ Custom punch Ref {ref_no}", bg='#8b5cf6')
 
             try:
-                self.manager_db.log_category_occurrence(
+                self.manager_db.logcatoccurence(
                     self.cabinet_id,
                     self.project_name,
                     custom_category,
@@ -1515,7 +1515,7 @@ class CircuitInspector:
             except Exception as e:
                 print(f"Manager category logging failed: {e}")
 
-            updated = self.update_interphase_status_for_ref(ref_no, status='NOK')
+            updated = self.updatestatsforref(ref_no, status='NOK')
             if updated:
                 print(f"Interphase: marked ref {ref_no} as NOK")
 
@@ -1531,16 +1531,16 @@ class CircuitInspector:
     # Additional helper methods for OCR
     # ============================================================================
 
-    def handle_wiring_type_selected_with_ocr(self, category, wiring_data, annotation, extracted_text):
+    def wiringtype(self, category, wiring_data, annotation, extracted_text):
         """Handle direct wiring type selection with OCR"""
-        punch_text = self.run_template_with_ocr(wiring_data, tag_name=None, prefill_text=extracted_text)
+        punch_text = self.runtemp(wiring_data, tag_name=None, prefill_text=extracted_text)
         if not punch_text:
             return
         
         ref_number = wiring_data.get("ref_number", "??")
         wiring_type = wiring_data.get("type", "Unknown")
         
-        self.log_error_direct(
+        self.logerrdirect(
             component_type=category["name"],
             error_name=wiring_type,
             error_template=punch_text,
@@ -1549,15 +1549,15 @@ class CircuitInspector:
         )
 
 
-    def handle_special_subcategory_with_ocr(self, category, special_sub, annotation, extracted_text):
+    def splcat(self, category, special_sub, annotation, extracted_text):
         """Handle special subcategories with OCR"""
-        punch_text = self.run_template_with_ocr(special_sub, tag_name=None, prefill_text=extracted_text)
+        punch_text = self.runtemp(special_sub, tag_name=None, prefill_text=extracted_text)
         if not punch_text:
             return
         
         ref_number = special_sub.get("ref_number", "??")
         
-        self.log_error_direct(
+        self.logerrdirect(
             component_type=category["name"],
             error_name=special_sub["name"],
             error_template=punch_text,
@@ -1566,7 +1566,7 @@ class CircuitInspector:
         )
 
 
-    def clear_temp_drawings(self):
+    def cleartemp(self):
         """Clear temporary drawing elements from canvas"""
         for line_id in self.temp_line_ids:
             try:
@@ -1579,7 +1579,7 @@ class CircuitInspector:
     # DISPLAY PAGE - WITH HIGHLIGHTER, PEN AND TEXT RENDERING
     # ================================================================
 
-    def display_page(self):
+    def display(self):
         """Render the current PDF page with all annotations"""
         if not self.pdf_document:
             self.canvas.delete("all")
@@ -1666,7 +1666,7 @@ class CircuitInspector:
             self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
             self.page_label.config(text=f"Page: {self.current_page + 1}/{len(self.pdf_document)}")
             self.sync_manager_stats_only()
-            self.update_tool_pane()
+            self.updtoolpane()
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to display page: {e}")
@@ -1675,7 +1675,7 @@ class CircuitInspector:
     # SAVE SESSION - WITH HIGHLIGHTER SERIALIZATION
     # ================================================================
 
-    def save_session(self):
+    def savesession(self):
         """Save current session to JSON file with all annotation types including highlights"""
         if not self.pdf_document:
             messagebox.showwarning("No PDF", "Load a PDF first before saving a session.")
@@ -1744,7 +1744,7 @@ class CircuitInspector:
     # LOAD SESSION - WITH HIGHLIGHTER DESERIALIZATION
     # ================================================================
 
-    def load_session(self):
+    def loadsession(self):
         """Load session from JSON file via file dialog"""
         path = filedialog.askopenfilename(
             title="Load Session JSON",
@@ -1753,10 +1753,10 @@ class CircuitInspector:
         if not path:
             return
 
-        self.load_session_from_path(path)
+        self.loadfrompath(path)
         self.sync_manager_stats_only()
 
-    def load_session_from_path(self, path):
+    def loadfrompath(self, path):
         """Load session from a specific JSON file path with all annotation types"""
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -1815,14 +1815,14 @@ class CircuitInspector:
             if ann.get('ref_no'):
                 self.session_refs.add(str(ann['ref_no']).strip())
 
-        self.display_page()
+        self.display()
         
 
 
     # ============================================================================
     # TRANSFORMATION METHODS FOR HIGHLIGHTER ANNOTATIONS
     # ============================================================================
-    def transform_bbox_for_rotation(self, rect, page):
+    def textrotate(self, rect, page):
         """Transform bbox for page rotation (for old rectangle annotations)"""
         r = page.rotation
         w = page.rect.width
@@ -1841,7 +1841,7 @@ class CircuitInspector:
         return fitz.Rect(x1, y1, x2, y2)
 
 
-    def transform_point_for_rotation(self, point, page):
+    def pointrotate(self, point, page):
         """Transform a single point (x, y) for page rotation
         
         Used for:
@@ -1865,7 +1865,7 @@ class CircuitInspector:
         return fitz.Point(x, y)
 
 
-    def transform_highlight_points_for_rotation(self, points, page):
+    def highlightpointrotate(self, points, page):
         """Transform highlighter stroke points for page rotation
         
         Highlighters store a list of (x, y) tuples representing the stroke path.
@@ -1899,7 +1899,7 @@ class CircuitInspector:
                 transformed_points.append(fitz.Point(x, y))
         
         return transformed_points
-    def get_text_position_for_highlight(self, rect, page):
+    def textpos(self, rect, page):
         """Get the correct position for text beside a highlight annotation based on page rotation
         
         Args:
@@ -1928,7 +1928,7 @@ class CircuitInspector:
         # Default fallback
         return fitz.Point(rect.x1 + offset, rect.y0)
     
-    def export_annotated_pdf(self):
+    def exportpdf(self):
         """Export PDF with all annotations including highlighter strokes"""
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -1978,7 +1978,7 @@ class CircuitInspector:
                         color = (rgb[0]/255, rgb[1]/255, rgb[2]/255)
                         
                         # Transform points for page rotation
-                        transformed_points = self.transform_highlight_points_for_rotation(
+                        transformed_points = self.highlightpointrotate(
                             points_page, 
                             target_page
                         )
@@ -2006,7 +2006,7 @@ class CircuitInspector:
                                 # Otherwise, try to read from Excel
                                 elif row and ws:
                                     try:
-                                        sr_val = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                                        sr_val = self.readcell(ws, row, self.punch_cols['sr_no'])
                                         if sr_val is not None:
                                             sr_text = f"Sr {sr_val}"
                                     except:
@@ -2015,12 +2015,12 @@ class CircuitInspector:
                                 if sr_text:
                                     # Use bbox for text position
                                     x1, y1, x2, y2 = ann['bbox_page']
-                                    bbox_rect = self.transform_bbox_for_rotation(
+                                    bbox_rect = self.textrotate(
                                         (x1, y1, x2, y2), 
                                         target_page
                                     )
                                     # Position text beside the highlight
-                                    text_pos = self.get_text_position_for_highlight(bbox_rect, target_page)
+                                    text_pos = self.textpos(bbox_rect, target_page)
                                     
                                     # Use different color for green vs orange
                                     text_color = (0, 0.5, 0) if color_key == 'green' else (1, 0, 0)
@@ -2042,7 +2042,7 @@ class CircuitInspector:
                     if len(points) >= 2:
                         # Transform points for rotation
                         transformed_points = [
-                            self.transform_point_for_rotation(pt, target_page) 
+                            self.pointrotate(pt, target_page) 
                             for pt in points
                         ]
                         
@@ -2057,7 +2057,7 @@ class CircuitInspector:
                     pos = ann['pos_page']
                     text = ann.get('text', '')
                     if text:
-                        text_point = self.transform_point_for_rotation(pos, target_page)
+                        text_point = self.pointrotate(pos, target_page)
                         try:
                             target_page.insert_text(
                                 text_point, text,
@@ -2086,7 +2086,7 @@ class CircuitInspector:
     # UI SETUP WITH HIGHLIGHTER CONTROLS
     # ================================================================
 
-    def setup_ui(self):
+    def uisetup(self):
         """Setup modern UI with highlighter controls"""
         # Main toolbar
         toolbar = tk.Frame(self.root, bg='#1e293b', height=80)
@@ -2099,45 +2099,45 @@ class CircuitInspector:
         # File Menu
         file_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Open PDF", command=self.load_pdf, accelerator="Ctrl+O")
+        file_menu.add_command(label="Open PDF", command=self.loadpdf, accelerator="Ctrl+O")
         file_menu.add_separator()
-        file_menu.add_command(label="Load Session", command=self.load_session, accelerator="Ctrl+L")
-        file_menu.add_command(label="Save Session", command=self.save_session, accelerator="Ctrl+S")
+        file_menu.add_command(label="Load Session", command=self.loadsession, accelerator="Ctrl+L")
+        file_menu.add_command(label="Save Session", command=self.savesession, accelerator="Ctrl+S")
         file_menu.add_separator()
-        file_menu.add_command(label="Export Annotated PDF", command=self.export_annotated_pdf, accelerator="Ctrl+E")
-        file_menu.add_command(label="Save Interphase Excel", command=self.save_interphase_excel)
-        file_menu.add_command(label="Open Excel", command=self.open_excel, accelerator="Ctrl+Shift+E")
+        file_menu.add_command(label="Export Annotated PDF", command=self.exportpdf, accelerator="Ctrl+E")
+        file_menu.add_command(label="Save Interphase Excel", command=self.saveinterphase)
+        file_menu.add_command(label="Open Excel", command=self.openxcl, accelerator="Ctrl+Shift+E")
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         
         # Tools Menu
         tools_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Review Checklist", command=self.review_checklist_now, accelerator="Ctrl+R")
-        tools_menu.add_command(label="Punch Closing Mode", command=self.punch_closing_mode, accelerator="Ctrl+Shift+P")
+        tools_menu.add_command(label="Review Checklist", command=self.reviewnow, accelerator="Ctrl+R")
+        tools_menu.add_command(label="Punch Closing Mode", command=self.punchclosing, accelerator="Ctrl+Shift+P")
         tools_menu.add_separator()
-        tools_menu.add_command(label="Verify ", command=self.view_production_handbacks, accelerator="Ctrl+Shift+V")
+        tools_menu.add_command(label="Verify ", command=self.viewhandbacks, accelerator="Ctrl+Shift+V")
         
         # View Menu
         view_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_command(label="Zoom In", command=self.zoom_in, accelerator="Ctrl++")
-        view_menu.add_command(label="Zoom Out", command=self.zoom_out, accelerator="Ctrl+-")
-        view_menu.add_command(label="Reset Zoom", command=lambda: setattr(self, 'zoom_level', 1.0) or self.display_page())
+        view_menu.add_command(label="Zoom In", command=self.zoomin, accelerator="Ctrl++")
+        view_menu.add_command(label="Zoom Out", command=self.zoomout, accelerator="Ctrl+-")
+        view_menu.add_command(label="Reset Zoom", command=lambda: setattr(self, 'zoom_level', 1.0) or self.display())
         
         # Keyboard shortcuts
-        self.root.bind_all("<Control-o>", lambda e: self.load_pdf())
-        self.root.bind_all("<Control-s>", lambda e: self.save_session())
-        self.root.bind_all("<Control-l>", lambda e: self.load_session())
-        self.root.bind_all("<Control-e>", lambda e: self.export_annotated_pdf())
-        self.root.bind_all("<Control-r>", lambda e: self.review_checklist_now())
-        self.root.bind_all("<Control-z>", lambda e: self.undo_last_action())
-        self.root.bind_all("<Control-P>", lambda e: self.punch_closing_mode())
-        self.root.bind_all("<Control-E>", lambda e: self.open_excel())
-        self.root.bind_all("<Control-V>", lambda e: self.view_production_handbacks())
-        self.root.bind_all("<Control-plus>", lambda e: self.zoom_in())
-        self.root.bind_all("<Control-minus>", lambda e: self.zoom_out())
-        self.root.bind_all("<Escape>", lambda e: self.deactivate_all())
+        self.root.bind_all("<Control-o>", lambda e: self.loadpdf())
+        self.root.bind_all("<Control-s>", lambda e: self.savesession())
+        self.root.bind_all("<Control-l>", lambda e: self.loadsession())
+        self.root.bind_all("<Control-e>", lambda e: self.exportpdf())
+        self.root.bind_all("<Control-r>", lambda e: self.reviewnow())
+        self.root.bind_all("<Control-z>", lambda e: self.undolast())
+        self.root.bind_all("<Control-P>", lambda e: self.punchclosing())
+        self.root.bind_all("<Control-E>", lambda e: self.openxcl())
+        self.root.bind_all("<Control-V>", lambda e: self.viewhandbacks())
+        self.root.bind_all("<Control-plus>", lambda e: self.zoom++())
+        self.root.bind_all("<Control-minus>", lambda e: self.zoomout())
+        self.root.bind_all("<Escape>", lambda e: self.deactivate())
         
         # Modern button style
         btn_style = {
@@ -2155,7 +2155,7 @@ class CircuitInspector:
         left_frame = tk.Frame(toolbar, bg='#1e293b')
         left_frame.pack(side=tk.LEFT, padx=10, pady=10)
         
-        tk.Button(left_frame, text="Open PDF", command=self.load_pdf, **btn_style).pack(side=tk.LEFT, padx=3)
+        tk.Button(left_frame, text="Open PDF", command=self.loadpdf, **btn_style).pack(side=tk.LEFT, padx=3)
         
         # Recent Projects Dropdown
         recent_frame = tk.Frame(left_frame, bg='#1e293b')
@@ -2167,7 +2167,7 @@ class CircuitInspector:
         self.recent_var = tk.StringVar(value="Select Project...")
         self.recent_dropdown = tk.OptionMenu(recent_frame, self.recent_var,
                                             "Select Project...",
-                                            command=self.load_recent_projects_ui)
+                                            command=self.loadrecprojui)
         self.recent_dropdown.config(bg='#334155', fg='white', font=('Segoe UI', 9),
                                    width=22, relief=tk.FLAT, borderwidth=0)
         self.recent_dropdown.pack(side=tk.LEFT)
@@ -2194,8 +2194,8 @@ class CircuitInspector:
             cursor='hand2'
         )
         self.color_canvas.pack(side=tk.LEFT)
-        self.update_color_button()
-        self.color_canvas.bind("<Button-1>", lambda e: self.toggle_highlighter())
+        self.colorbutton()
+        self.color_canvas.bind("<Button-1>", lambda e: self.togglehighlighter())
         
         # Dropdown arrow - sleeker design
         self.dropdown_btn = tk.Button(
@@ -2210,7 +2210,7 @@ class CircuitInspector:
             borderwidth=0,
             width=2,
             height=1,
-            command=self.show_color_menu,
+            command=self.colourmenu,
             cursor='hand2'
         )
         self.dropdown_btn.pack(side=tk.LEFT, padx=(4, 0))
@@ -2226,9 +2226,9 @@ class CircuitInspector:
         nav_btn_style = btn_style.copy()
         nav_btn_style['bg'] = '#64748b'
         
-        tk.Button(center_frame, text="<", command=self.prev_page, width=3,
+        tk.Button(center_frame, text="<", command=self.prev, width=3,
                  **nav_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(center_frame, text=">", command=self.next_page, width=3,
+        tk.Button(center_frame, text=">", command=self.next, width=3,
                  **nav_btn_style).pack(side=tk.LEFT, padx=2)
         
         # Zoom controls
@@ -2238,9 +2238,9 @@ class CircuitInspector:
         zoom_btn_style = btn_style.copy()
         zoom_btn_style['bg'] = '#10b981'
         
-        tk.Button(zoom_frame, text="🔍+", command=self.zoom_in, width=4,
+        tk.Button(zoom_frame, text="🔍+", command=self.zoomin, width=4,
                  **zoom_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(zoom_frame, text="🔍−", command=self.zoom_out, width=4,
+        tk.Button(zoom_frame, text="🔍−", command=self.zoomout, width=4,
                  **zoom_btn_style).pack(side=tk.LEFT, padx=2)
         
         # Tool section
@@ -2252,7 +2252,7 @@ class CircuitInspector:
         
         # Load icons or use fallback
         try:
-            assets_dir = os.path.join(os.path.dirname(get_app_base_dir()), "assets")
+            assets_dir = os.path.join(os.path.dirname(base()), "assets")
             icon_size = (44, 44)
             
             pen_icon_path = os.path.join(assets_dir, "pen_icon.png")
@@ -2268,19 +2268,19 @@ class CircuitInspector:
             self.undo_icon = ImageTk.PhotoImage(undo_img)
             
             self.pen_btn = tk.Button(tool_frame, image=self.pen_icon,
-                                    command=lambda: self.set_tool_mode("pen"),
+                                    command=lambda: self.toolmode("pen"),
                                     bg='#334155', width=48, height=48,
                                     relief=tk.FLAT, cursor='hand2')
             self.pen_btn.pack(side=tk.LEFT, padx=2)
             
             self.text_btn = tk.Button(tool_frame, image=self.text_icon,
-                                     command=lambda: self.set_tool_mode("text"),
+                                     command=lambda: self.toolmode("text"),
                                      bg='#334155', width=48, height=48,
                                      relief=tk.FLAT, cursor='hand2')
             self.text_btn.pack(side=tk.LEFT, padx=2)
             
             self.undo_btn = tk.Button(tool_frame, image=self.undo_icon,
-                                      command=self.undo_last_action,
+                                      command=self.undolast,
                                       bg='#334155', width=48, height=48,
                                       relief=tk.FLAT, cursor='hand2')
             self.undo_btn.pack(side=tk.LEFT, padx=2)
@@ -2296,14 +2296,14 @@ class CircuitInspector:
         verify_btn_style['bg'] = '#ec4899'
         
         tk.Button(right_frame, text=" Verify ",
-                 command=self.view_production_handbacks,
+                 command=self.viewhandbacks,
                  **verify_btn_style).pack(side=tk.RIGHT, padx=3)
         
         handover_btn_style = btn_style.copy()
         handover_btn_style['bg'] = '#8b5cf6'
         
         tk.Button(right_frame, text="Handover",
-                 command=self.handover_to_production,
+                 command=self.handover,
                  **handover_btn_style).pack(side=tk.RIGHT, padx=3)
         
         # Canvas with scrollbars
@@ -2326,9 +2326,9 @@ class CircuitInspector:
         h_scrollbar.config(command=self.canvas.xview)
         
         # Bind mouse events
-        self.canvas.bind("<ButtonPress-1>", self.on_left_press)
-        self.canvas.bind("<B1-Motion>", self.on_left_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_left_release_with_ocr)
+        self.canvas.bind("<ButtonPress-1>", self.leftclick)
+        self.canvas.bind("<B1-Motion>", self.leftdrag)
+        self.canvas.bind("<ButtonRelease-1>", self.leftrel)
         
         # Modern status bar
         status_bar = tk.Frame(self.root, bg='#334155', height=40)
@@ -2343,7 +2343,7 @@ class CircuitInspector:
     # HIGHLIGHTER UI HELPERS - UPDATED
     # ================================================================
 
-    def update_color_button(self):
+    def colorbutton(self):
         """Update the circular color button display - sharper widget style"""
         self.color_canvas.delete("all")
         
@@ -2384,7 +2384,7 @@ class CircuitInspector:
             )
 
 
-    def show_color_menu(self):
+    def colourmenu(self):
         """Show color picker dropdown menu"""
         menu = Menu(self.root, tearoff=0, bg='#1e293b', fg='white',
                    activebackground='#3b82f6', activeforeground='white',
@@ -2397,7 +2397,7 @@ class CircuitInspector:
             
             menu.add_command(
                 label=label,
-                command=lambda ck=color_key: self.change_color(ck),
+                command=lambda ck=color_key: self.colorchange(ck),
                 foreground=hex_color,
                 font=('Arial', 12, 'bold')
             )
@@ -2407,36 +2407,36 @@ class CircuitInspector:
         menu.post(x, y)
 
 
-    def change_color(self, color_key):
+    def colorchange(self, color_key):
         """Change the highlighter color"""
         self.current_color_key = color_key
-        self.update_color_button()
+        self.colorbutton()
         
         if self.active_highlighter:
             self.active_highlighter = color_key
             self.root.config(cursor="pencil")
 
 
-    def toggle_highlighter(self):
+    def togglehighlighter(self):
         """Toggle highlighter on/off"""
         if self.active_highlighter:
             self.active_highlighter = None
             self.root.config(cursor="")
-            self.update_color_button()
+            self.colorbutton()
         else:
             self.active_highlighter = self.current_color_key
             self.root.config(cursor="pencil")
-            self.update_color_button()
+            self.colorbutton()
             
             if self.tool_mode:
                 self.tool_mode = None
                 self.pen_btn.config(bg='#334155', relief=tk.FLAT)
                 self.text_btn.config(bg='#334155', relief=tk.FLAT)
 
-    def set_tool_mode(self, mode):
+    def toolmode(self, mode):
         """Set tool mode (pen or text)"""
         if self.active_highlighter:
-            self.toggle_highlighter()
+            self.togglehighlighter()
         
         if self.tool_mode == mode:
             self.tool_mode = None
@@ -2453,19 +2453,19 @@ class CircuitInspector:
                 self.text_btn.config(bg='#3b82f6', relief=tk.SUNKEN)
                 self.pen_btn.config(bg='#334155', relief=tk.FLAT)
 
-    def deactivate_all(self):
+    def deactivate(self):
         """Deactivate all tools and highlighters"""
         if self.active_highlighter:
-            self.toggle_highlighter()
+            self.togglehighlighter()
         if self.tool_mode:
-            self.set_tool_mode(self.tool_mode)
+            self.toolmode(self.tool_mode)
 
-    def update_tool_pane(self):
+    def updtoolpane(self):
         """Update annotation statistics"""
         # Placeholder - implement if you have a tool pane
         pass
 
-    def _flash_status(self, message, bg='#10b981'):
+    def flashstat(self, message, bg='#10b981'):
         """Show a temporary status message"""
         status_label = tk.Label(
             self.root, 
@@ -2484,7 +2484,7 @@ class CircuitInspector:
     # UNDO FUNCTIONALITY
     # ================================================================
 
-    def add_to_undo_stack(self, action_type, annotation):
+    def addtostack(self, action_type, annotation):
         """Add an action to the undo stack"""
         self.undo_stack.append({
             'type': action_type,
@@ -2494,7 +2494,7 @@ class CircuitInspector:
         if len(self.undo_stack) > self.max_undo:
             self.undo_stack.pop(0)
 
-    def undo_last_action(self):
+    def undolast(self):
         """Undo the last annotation action"""
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
@@ -2506,40 +2506,40 @@ class CircuitInspector:
             annotation = last_action['annotation']
             if annotation in self.annotations:
                 self.annotations.remove(annotation)
-                self.display_page()
-                self._flash_status("Annotation removed", bg='#10b981')
+                self.display()
+                self.flashstat("Annotation removed", bg='#10b981')
         
-        self.update_tool_pane()
+        self.updtoolpane()
 
     # ================================================================
     # NAVIGATION AND ZOOM
     # ================================================================
 
-    def prev_page(self):
+    def prev(self):
         if self.pdf_document and self.current_page > 0:
             self.current_page -= 1
-            self.display_page()
+            self.display()
 
-    def next_page(self):
+    def next(self):
         if self.pdf_document and self.current_page < len(self.pdf_document) - 1:
             self.current_page += 1
-            self.display_page()
+            self.display()
 
-    def zoom_in(self):
+    def zoomin(self):
         if self.zoom_level < 3.0:
             self.zoom_level += 0.25
-            self.display_page()
+            self.display()
 
-    def zoom_out(self):
+    def zoomout(self):
         if self.zoom_level > 0.5:
             self.zoom_level -= 0.25
-            self.display_page()
+            self.display()
 
     # ================================================================
     # PLACEHOLDER METHODS - Implement from your original code
     # ================================================================
 
-    def load_pdf(self):
+    def loadpdf(self):
         """Load PDF - implement with your original logic"""
         file_path = filedialog.askopenfilename(
             title="Select Circuit Diagram PDF",
@@ -2554,14 +2554,14 @@ class CircuitInspector:
                 self.zoom_level = 1.0
                 self.tool_mode = None
                 self.active_highlighter = None
-                self.update_color_button()
+                self.colorbutton()
                 self.root.config(cursor="")
-                self.current_sr_no = self.get_next_sr_no()
-                self.display_page()
+                self.current_sr_no = self.getnextsr()
+                self.display()
                 messagebox.showinfo("Success", f"Loaded PDF with {len(self.pdf_document)} pages")
                 
-                self.ask_project_details()
-                self.prepare_project_folders()
+                self.askprojdetails()
+                self.preparefolders()
 
                 try:
                     self.working_excel_path = os.path.join(
@@ -2585,7 +2585,7 @@ class CircuitInspector:
                     messagebox.showerror("Excel Error", f"Failed to prepare working Excel:\n{e}")
                     return
 
-                self.write_project_details_to_excel()
+                self.write_to_xcl()
 
                 expected_session_path = os.path.join(
                     self.project_dirs["sessions"],
@@ -2606,14 +2606,14 @@ class CircuitInspector:
                         "Existing session found. Do you want to resume it?"
                     )
                     if resume:
-                        self.load_session_from_path(expected_session_path)
+                        self.loadfrompath(expected_session_path)
                 
-                self.save_recent_project()
+                self.saverecentproj()
 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load PDF: {str(e)}")
 
-    def load_categories(self):
+    def loadcat(self):
         """Load categories from JSON"""
         try:
             if os.path.exists(self.category_file):
@@ -2625,7 +2625,7 @@ class CircuitInspector:
             print(f"Error loading categories: {e}")
             self.categories = []
 
-    def get_next_sr_no(self):
+    def getnextsr(self):
         """Get next serial number"""
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):
@@ -2635,7 +2635,7 @@ class CircuitInspector:
             last_sr_no = 0
             row_num = 8
             while row_num <= ws.max_row + 5:
-                val = self.read_cell(ws, row_num, self.punch_cols['sr_no'])
+                val = self.readcell(ws, row_num, self.punch_cols['sr_no'])
                 if val is None:
                     break
                 try:
@@ -2648,7 +2648,7 @@ class CircuitInspector:
         except Exception:
             return 1
 
-    def run_template(self, template_def, tag_name=None):
+    def runtemp(self, template_def, tag_name=None):
         """Execute a template definition"""
         values = {}
         if tag_name:
@@ -2667,38 +2667,38 @@ class CircuitInspector:
             return None
 
     # Excel cell helpers
-    def split_cell(self, cell_ref):
+    def splitcell(self, cell_ref):
         m = re.match(r"([A-Z]+)(\d+)", cell_ref)
         if not m:
             raise ValueError(f"Invalid cell reference: {cell_ref}")
         col, row = m.groups()
         return int(row), col
 
-    def _resolve_merged_target(self, ws, row, col_idx):
+    def resolvemergedtar(self, ws, row, col_idx):
         for merged in ws.merged_cells.ranges:
             if merged.min_row <= row <= merged.max_row and merged.min_col <= col_idx <= merged.max_col:
                 return merged.min_row, merged.min_col
         return row, col_idx
 
-    def write_cell(self, ws, row, col, value):
+    def writecell(self, ws, row, col, value):
         if isinstance(col, str):
             col_idx = column_index_from_string(col)
         else:
             col_idx = int(col)
-        target_row, target_col = self._resolve_merged_target(ws, int(row), col_idx)
+        target_row, target_col = self.resolvemergedtar(ws, int(row), col_idx)
         ws.cell(row=target_row, column=target_col).value = value
 
-    def read_cell(self, ws, row, col):
+    def readcell(self, ws, row, col):
         if isinstance(col, str):
             col_idx = column_index_from_string(col)
         else:
             col_idx = int(col)
-        target_row, target_col = self._resolve_merged_target(ws, int(row), col_idx)
+        target_row, target_col = self.resolvemergedtar(ws, int(row), col_idx)
         return ws.cell(row=target_row, column=target_col).value
 
 
     
-    def extract_text_from_pdf_page(self, pdf_path, page_number):
+    def extracttext(self, pdf_path, page_number):
         """Extract text from a specific page using OCR"""
         try:
             doc = fitz.open(pdf_path)
@@ -2721,7 +2721,7 @@ class CircuitInspector:
             print(f"OCR Error: {e}")
             return ""
 
-    def extract_cabinet_number(self, text):
+    def extractcabnum(self, text):
         """Extract cabinet number from text"""
         # Try multiple patterns to find cabinet number
         patterns = [
@@ -2772,7 +2772,7 @@ class CircuitInspector:
         return ""
 
 
-    def extract_project_names(self, text):
+    def extractprojectnames(self, text):
         """Extract all potential project names from text"""
         # Split text into lines and clean them
         lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -2796,7 +2796,7 @@ class CircuitInspector:
         
         return project_names
 
-    def ask_project_details(self):
+    def askprojdetails(self):
         """Ask for project details including storage location with OCR auto-fill"""
         
         # Extract OCR data from third page (index 2) if PDF is loaded
@@ -2805,9 +2805,9 @@ class CircuitInspector:
         project_names_from_ocr = []
         
         if hasattr(self, 'current_pdf_path') and self.current_pdf_path:
-            ocr_text = self.extract_text_from_pdf_page(self.current_pdf_path, 2)  # Page 3 (index 2)
-            cabinet_from_ocr = self.extract_cabinet_number(ocr_text)
-            project_names_from_ocr = self.extract_project_names(ocr_text)
+            ocr_text = self.extracttext(self.current_pdf_path, 2)  # Page 3 (index 2)
+            cabinet_from_ocr = self.extractcabnum(ocr_text)
+            project_names_from_ocr = self.extractprojectnames(ocr_text)
         
         dlg = tk.Toplevel(self.root)
         dlg.title("Project Details")
@@ -2957,7 +2957,7 @@ class CircuitInspector:
         dlg.wait_window()
     
 
-    def write_project_details_to_excel(self):
+    def write_to_xcl(self):
         if not self.excel_file or not os.path.exists(self.excel_file):
             return
 
@@ -2971,16 +2971,16 @@ class CircuitInspector:
                 ws = wb[sheet_name]
 
                 if getattr(self, "project_name", ""):
-                    r, c = self.split_cell(cells["project_name"])
-                    self.write_cell(ws, r, c, self.project_name)
+                    r, c = self.splitcell(cells["project_name"])
+                    self.writecell(ws, r, c, self.project_name)
 
                 if getattr(self, "sales_order_no", ""):
-                    r, c = self.split_cell(cells["sales_order"])
-                    self.write_cell(ws, r, c, self.sales_order_no)
+                    r, c = self.splitcell(cells["sales_order"])
+                    self.writecell(ws, r, c, self.sales_order_no)
 
                 if getattr(self, "cabinet_id", ""):
-                    r, c = self.split_cell(cells["cabinet_id"])
-                    self.write_cell(ws, r, c, self.cabinet_id)
+                    r, c = self.splitcell(cells["cabinet_id"])
+                    self.writecell(ws, r, c, self.cabinet_id)
 
             wb.save(self.excel_file)
             wb.close()
@@ -2990,7 +2990,7 @@ class CircuitInspector:
         except Exception as e:
             messagebox.showerror("Excel Error", f"Failed to write project details:\n{e}")
 
-    def prepare_project_folders(self):
+    def preparefolders(self):
         """Prepare project folders at user-selected location
         Structure: storage_location/project_name/cabinet_id/...
         """
@@ -3027,7 +3027,7 @@ class CircuitInspector:
         self.project_dirs = folders
         return True
 
-    def get_session_path_for_pdf(self):
+    def getpathforpdf(self):
         if not self.current_pdf_path:
             return None
 
@@ -3042,7 +3042,7 @@ class CircuitInspector:
     # CHECKLIST FUNCTIONS
     # ================================================================
 
-    def review_checklist_now(self):
+    def reviewnow(self):
         if not self.excel_file or not os.path.exists(self.excel_file):
             messagebox.showerror("Excel Missing", "Working Excel file not found.")
             return
@@ -3050,14 +3050,14 @@ class CircuitInspector:
         self.checklist_file = self.excel_file
 
         try:
-            self.review_checklist_before_save(self.checklist_file, self.session_refs)
+            self.reviewbeforesave(self.checklist_file, self.session_refs)
         except Exception as e:
             messagebox.showerror("Checklist Error", f"Checklist review failed:\n{e}")
 
     # ================================================================
     # UPDATED: gather_checklist_matches - Updated for new column structure
     # ================================================================
-    def read_open_punches_from_excel(self):
+    def openpuches(self):
         """Reads punch sheet and returns list of open punches with all details."""
         punches = []
 
@@ -3070,30 +3070,30 @@ class CircuitInspector:
 
             row = 8
             while True:
-                sr = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
                 if sr is None:
                     break
 
                 # Check if punch is closed
-                closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                 if closed:
                     row += 1
                     continue
 
                 # Check if punch is implemented
-                implemented = bool(self.read_cell(ws, row, self.punch_cols['implemented_name']))
+                implemented = bool(self.readcell(ws, row, self.punch_cols['implemented_name']))
 
                 punches.append({
                     'sr_no': sr,
                     'row': row,
-                    'ref_no': self.read_cell(ws, row, self.punch_cols['ref_no']),
-                    'punch_text': self.read_cell(ws, row, self.punch_cols['desc']),
-                    'category': self.read_cell(ws, row, self.punch_cols['category']),
+                    'ref_no': self.readcell(ws, row, self.punch_cols['ref_no']),
+                    'punch_text': self.readcell(ws, row, self.punch_cols['desc']),
+                    'category': self.readcell(ws, row, self.punch_cols['category']),
                     'implemented': implemented,
-                    'implemented_name': self.read_cell(ws, row, self.punch_cols['implemented_name']),
-                    'implemented_date': self.read_cell(ws, row, self.punch_cols['implemented_date']),
-                    'checked_name': self.read_cell(ws, row, self.punch_cols['checked_name']),
-                    'checked_date': self.read_cell(ws, row, self.punch_cols['checked_date'])
+                    'implemented_name': self.readcell(ws, row, self.punch_cols['implemented_name']),
+                    'implemented_date': self.readcell(ws, row, self.punch_cols['implemented_date']),
+                    'checked_name': self.readcell(ws, row, self.punch_cols['checked_name']),
+                    'checked_date': self.readcell(ws, row, self.punch_cols['checked_date'])
                 })
 
                 row += 1
@@ -3112,10 +3112,10 @@ class CircuitInspector:
     # 3. UPDATED: review_checklist_before_save - With name and date updates
     # ================================================================
 
-    def review_checklist_before_save(self, checklist_path, refs_set):
+    def reviewbeforesave(self, checklist_path, refs_set):
         """Modern dialog for reviewing and marking checklist items with name and date"""
         try:
-            cols, matches = self.gather_checklist_matches(checklist_path, refs_set)
+            cols, matches = self.checklistmatches(checklist_path, refs_set)
         except Exception as e:
             raise
 
@@ -3211,9 +3211,9 @@ class CircuitInspector:
 
             try:
                 # Update status, name, and date
-                self.write_cell(ws, r, status_col, status_value)
-                self.write_cell(ws, r, name_col, username)
-                self.write_cell(ws, r, date_col, current_date)
+                self.writecell(ws, r, status_col, status_value)
+                self.writecell(ws, r, name_col, username)
+                self.writecell(ws, r, date_col, current_date)
                 wb.save(checklist_path)
             except PermissionError:
                 messagebox.showerror("File Locked", 
@@ -3267,10 +3267,10 @@ class CircuitInspector:
                 username = self.logged_in_fullname or "Unknown User"
                 
                 # Write all columns properly
-                self.write_cell(ws, r, status_col, "N/A")
-                self.write_cell(ws, r, date_col, current_date)
-                self.write_cell(ws, r, name_col, username)
-                self.write_cell(ws, r, remark_col, remark)
+                self.writecell(ws, r, status_col, "N/A")
+                self.writecell(ws, r, date_col, current_date)
+                self.writecell(ws, r, name_col, username)
+                self.writecell(ws, r, remark_col, remark)
                 wb.save(checklist_path)
                 
                 messagebox.showinfo("Remark Saved", 
@@ -3342,7 +3342,7 @@ class CircuitInspector:
     # 4. HELPER: gather_checklist_matches - Returns column info and matches
     # ================================================================
 
-    def gather_checklist_matches(self, checklist_path, refs_set):
+    def checklistmatches(self, checklist_path, refs_set):
         """Returns Interphase rows where Reference No is NOT in refs_set."""
         wb = load_workbook(checklist_path)
         if self.interphase_sheet_name not in wb.sheetnames:
@@ -3361,7 +3361,7 @@ class CircuitInspector:
         max_row = ws.max_row if ws.max_row else 2000
 
         for r in range(11, max_row + 1):
-            ref_val = self.read_cell(ws, r, ref_col)
+            ref_val = self.readcell(ws, r, ref_col)
             if ref_val is None:
                 continue
 
@@ -3370,13 +3370,13 @@ class CircuitInspector:
             if ref_str in refs_set:
                 continue
 
-            status_val = self.read_cell(ws, r, status_col)
+            status_val = self.readcell(ws, r, status_col)
             status_str = str(status_val).strip().lower() if status_val is not None else ''
 
             if status_str in ('ok', 'nok', 'n/a', 'na', 'not applicable'):
                 continue
 
-            desc_val = self.read_cell(ws, r, desc_col) or ''
+            desc_val = self.readcell(ws, r, desc_col) or ''
             matches.append((r, ref_str, str(desc_val)))
 
         wb.close()
@@ -3392,7 +3392,7 @@ class CircuitInspector:
     # EXCEL HELPERS
     # ================================================================
 
-    def save_interphase_excel(self):
+    def saveinterphase(self):
         if not self.current_pdf_path:
             messagebox.showwarning("No PDF", "Load a PDF first.")
             return
@@ -3413,7 +3413,7 @@ class CircuitInspector:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save Excel:\n{e}")
 
-    def open_excel(self):
+    def openxcl(self):
         if not self.excel_file or not os.path.exists(self.excel_file):
             messagebox.showwarning("No Excel", "No working Excel file found.")
             return
@@ -3434,16 +3434,16 @@ class CircuitInspector:
     # FUZZY MATCH HELPER
     # ================================================================
 
-    def find_row_by_sr_or_text(self, sr_no, punch_text, min_ratio=0.60):
+    def findrow(self, sr_no, punch_text, min_ratio=0.60):
         try:
             wb = load_workbook(self.excel_file, read_only=True)
             ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
             row = 8
 
             while True:
-                cell = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                cell = self.readcell(ws, row, self.punch_cols['sr_no'])
                 if cell is None:
-                    if self.read_cell(ws, row, self.punch_cols['desc']) is None:
+                    if self.readcell(ws, row, self.punch_cols['desc']) is None:
                         break
                     else:
                         row += 1
@@ -3465,7 +3465,7 @@ class CircuitInspector:
             row = 8
 
             while True:
-                txt = self.read_cell(ws, row, self.punch_cols['desc'])
+                txt = self.readcell(ws, row, self.punch_cols['desc'])
                 if txt is None:
                     if row > 2000:
                         break
@@ -3498,7 +3498,7 @@ class CircuitInspector:
     # VIEW PRODUCTION HANDBACK ITEMS
     # ================================================================
 
-    def sync_manager_stats(self):
+    def syncstatsmgr(self):
         """Sync current cabinet statistics to manager database WITHOUT changing status"""
         if not self.pdf_document or not self.cabinet_id:
             return
@@ -3513,7 +3513,7 @@ class CircuitInspector:
             total_punches = len(error_anns)
             
             # Count from Excel for accuracy
-            open_punches = self.count_open_punches()
+            open_punches = self.countopen()
             
             # Count implemented (has implemented_name but no closed_name)
             implemented_punches = 0
@@ -3527,12 +3527,12 @@ class CircuitInspector:
                     
                     row = 8
                     while row <= ws.max_row + 5:
-                        sr = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                        sr = self.readcell(ws, row, self.punch_cols['sr_no'])
                         if sr is None:
                             break
                         
-                        implemented = self.read_cell(ws, row, self.punch_cols['implemented_name'])
-                        closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                        implemented = self.readcell(ws, row, self.punch_cols['implemented_name'])
+                        closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                         
                         if closed:
                             closed_punches += 1
@@ -3549,7 +3549,7 @@ class CircuitInspector:
             existing_status = self.get_current_status_from_db()
             
             # Update manager database with EXISTING status preserved
-            self.manager_db.update_cabinet(
+            self.manager_db.updatecab(
                 self.cabinet_id,
                 self.project_name,
                 self.sales_order_no,
@@ -3573,7 +3573,7 @@ class CircuitInspector:
     # UPDATED: view_production_handbacks - Auto-open punch closing
     # ============================================================================
 
-    def view_production_handbacks(self):
+    def viewhandbacks(self):
         """View and verify items returned from production"""
         
         pending_items = self.handover_db.get_pending_quality_items()
@@ -3639,7 +3639,7 @@ class CircuitInspector:
             )
             listbox.insert(tk.END, display_text)
         
-        def load_selected():
+        def loadsel():
             selection = listbox.curselection()
             if not selection:
                 messagebox.showwarning("No Selection", "Please select an item first.")
@@ -3659,7 +3659,7 @@ class CircuitInspector:
                 self.sales_order_no = item['sales_order_no']
                 self.storage_location = project_data['storage_location']
                 
-                self.prepare_project_folders()
+                self.preparefolders()
                 
                 if not os.path.exists(item['pdf_path']):
                     messagebox.showerror("Error", f"PDF file not found:\n{item['pdf_path']}")
@@ -3675,13 +3675,13 @@ class CircuitInspector:
                 self.excel_file = item['excel_path']
                 self.working_excel_path = item['excel_path']
                 
-                self.current_sr_no = self.get_next_sr_no()
+                self.current_sr_no = self.getnextsr()
                 
                 if item.get('session_path') and os.path.exists(item['session_path']):
-                    self.load_session_from_path(item['session_path'])
+                    self.loadfrompath(item['session_path'])
                 else:
                     self.annotations = []
-                    self.display_page()
+                    self.display()
                 
                 # UPDATED: Set status to "Rework being verified"
                 self.update_status_and_sync('being_closed_by_quality')
@@ -3689,7 +3689,7 @@ class CircuitInspector:
                 dlg.destroy()
                 
                 # UPDATED: Auto-open punch closing dialog
-                self.verify_production_work_with_punch_closing(item)
+                self.verifyprodrework(item)
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load item:\n{e}")
@@ -3708,7 +3708,7 @@ class CircuitInspector:
             'pady': 12
         }
         
-        tk.Button(btn_frame, text=" Load & Verify", command=load_selected,
+        tk.Button(btn_frame, text=" Load & Verify", command=loadsel,
                  bg='#3b82f6', fg='white', **btn_style).pack(side=tk.LEFT, padx=5)
         
         # REMOVED: Quick Verify button as requested
@@ -3716,26 +3716,26 @@ class CircuitInspector:
         tk.Button(btn_frame, text="Cancel", command=dlg.destroy,
                  bg='#64748b', fg='white', **btn_style).pack(side=tk.RIGHT, padx=5)
         
-        listbox.bind('<Double-Button-1>', lambda e: load_selected())
+        listbox.bind('<Double-Button-1>', lambda e: loadsel())
 
 
     # ============================================================================
     # NEW: verify_production_work_with_punch_closing - Auto-open punch closing
     # ============================================================================
 
-    def verify_production_work_with_punch_closing(self, item_data):
+    def verifyprodrework(self, item_data):
         """Auto-open punch closing mode after loading production item"""
         
         # Count open punches
-        open_count = self.count_open_punches()
-        self.punch_closing_mode()
+        open_count = self.countopen()
+        self.punchclosing()
 
 
     # ============================================================================
     # NEW: punch_closing_mode_for_verification - Modified punch closing for handback
     # ============================================================================
 
-    def is_checklist_complete(self):
+    def checklistcomp(self):
         """Check if all Interphase checklist items have been reviewed
         
         Returns:
@@ -3758,11 +3758,11 @@ class CircuitInspector:
             max_row = ws.max_row if ws.max_row else 2000
             
             for r in range(11, max_row + 1):
-                ref_val = self.read_cell(ws, r, ref_col)
+                ref_val = self.readcell(ws, r, ref_col)
                 if ref_val is None:
                     continue
                 
-                status_val = self.read_cell(ws, r, status_col)
+                status_val = self.readcell(ws, r, status_col)
                 status_str = str(status_val).strip().lower() if status_val is not None else ''
                 
                 # Check if status is filled (OK, NOK, or N/A)
@@ -3777,7 +3777,7 @@ class CircuitInspector:
             return (True, 0)  # Assume complete on error
 
 
-    def auto_finalize_if_complete(self):
+    def autofin(self):
         """Automatically finalize cabinet if all punches are closed
         
         This checks:
@@ -3789,7 +3789,7 @@ class CircuitInspector:
             return
         
         # Check open punches
-        open_punches = self.count_open_punches()
+        open_punches = self.countopen()
         
         if open_punches > 0:
             print(f"Cannot auto-finalize: {open_punches} open punch(es) remaining")
@@ -3798,7 +3798,7 @@ class CircuitInspector:
         print(" All punches closed - checking checklist...")
         
         # Check checklist completion
-        is_complete, pending_count = self.is_checklist_complete()
+        is_complete, pending_count = self.checklistcomp()
         
         if not is_complete:
             print(f"Checklist incomplete: {pending_count} item(s) pending")
@@ -3813,10 +3813,10 @@ class CircuitInspector:
             
             if proceed:
                 # Open checklist review dialog
-                self.review_checklist_now()
+                self.reviewnow()
                 
                 # After review, check again
-                is_complete, pending_count = self.is_checklist_complete()
+                is_complete, pending_count = self.checklistcomp()
                 
                 if not is_complete:
                     messagebox.showinfo(
@@ -3831,7 +3831,7 @@ class CircuitInspector:
         
         try:
             # 1. Save session
-            self.save_session()
+            self.savesession()
             
             # 2. Save Interphase Excel
             interphase_path = os.path.join(
@@ -3845,21 +3845,21 @@ class CircuitInspector:
             except Exception as e:
                 
             
-            # 3. Export annotated PDF
-            self.export_annotated_pdf()
-            print("Annotated PDF exported")
-            
-            # 4. Update status to Closed
-            self.update_status_and_sync('closed')
-            print("Status updated to: Closed")
-            
-            # 5. Show success message
-            messagebox.showinfo(
-                "Cabinet Finalized",
-                "• Status: Closed",
-                icon='info'
-            )
-            
+                # 3. Export annotated PDF
+                self.exportpdf()
+                print("Annotated PDF exported")
+                
+                # 4. Update status to Closed
+                self.update_status_and_sync('closed')
+                print("Status updated to: Closed")
+                
+                # 5. Show success message
+                messagebox.showinfo(
+                    "Cabinet Finalized",
+                    "• Status: Closed",
+                    icon='info'
+                )
+                
         except Exception as e:
             messagebox.showerror("Finalization Error", f"Failed to finalize cabinet:\n{e}")
             import traceback
@@ -3867,12 +3867,12 @@ class CircuitInspector:
 
 
     # UPDATED: punch_closing_mode - with auto-finalization
-    def punch_closing_mode(self):
+    def punchclosing(self):
         """Modern dialog for punch closing workflow - Converts orange to green highlights"""
-        punches = self.read_open_punches_from_excel()
+        punches = self.openpuches()
 
         if not punches:
-            self.auto_finalize_if_complete()
+            self.autofin()
             return
 
         punches.sort(key=lambda p: (not p['implemented'], p['sr_no']))
@@ -4026,8 +4026,8 @@ class CircuitInspector:
                 wb = load_workbook(self.excel_file)
                 ws = wb[self.punch_sheet_name]
 
-                self.write_cell(ws, p['row'], self.punch_cols['closed_name'], name)
-                self.write_cell(ws, p['row'], self.punch_cols['closed_date'], 
+                self.writecell(ws, p['row'], self.punch_cols['closed_name'], name)
+                self.writecell(ws, p['row'], self.punch_cols['closed_date'], 
                               datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
                 wb.save(self.excel_file)
@@ -4057,7 +4057,7 @@ class CircuitInspector:
             else:
                 print(f"⚠️ Warning: No annotation found for SR {p['sr_no']}")
 
-            self.display_page()
+            self.display()
             self.sync_manager_stats_only()
 
             if pos[0] < len(punches) - 1:
@@ -4070,7 +4070,7 @@ class CircuitInspector:
                 dlg.destroy()
                 
                 # NEW: Auto-finalize after closing dialog
-                self.root.after(100, self.auto_finalize_if_complete)
+                self.root.after(100, self.autofin)
 
         def next_item():
             if pos[0] < len(punches) - 1:
@@ -4119,7 +4119,7 @@ class CircuitInspector:
 
         dlg.wait_window()
 
-    def auto_finalize_if_complete(self):
+    def autofin(self):
         """Automatically finalize cabinet if all punches are closed
         
         This checks:
@@ -4132,7 +4132,7 @@ class CircuitInspector:
             return
         
         # Check open punches
-        open_punches = self.count_open_punches()
+        open_punches = self.countopen()
         
         if open_punches > 0:
             print(f" Cannot auto-finalize: {open_punches} open punch(es) remaining")
@@ -4141,7 +4141,7 @@ class CircuitInspector:
         print("✓ All punches closed - checking checklist...")
         
         # Check checklist completion
-        is_complete, pending_count = self.is_checklist_complete()
+        is_complete, pending_count = self.checklistcomp()
         
         if not is_complete:
             print(f" Checklist incomplete: {pending_count} item(s) pending")
@@ -4156,10 +4156,10 @@ class CircuitInspector:
             
             if proceed:
                 # Open checklist review dialog
-                self.review_checklist_now()
+                self.reviewnow()
                 
                 # After review, check again
-                is_complete, pending_count = self.is_checklist_complete()
+                is_complete, pending_count = self.checklistcomp()
                 
                 if not is_complete:
                     messagebox.showinfo(
@@ -4174,7 +4174,7 @@ class CircuitInspector:
         
         try:
             # 1. Save session
-            self.save_session()
+            self.savesession()
             
             # 2. Save Interphase Excel
             interphase_path = os.path.join(
@@ -4189,7 +4189,7 @@ class CircuitInspector:
                 print(f"Failed to save Interphase Excel: {e}")
             
             # 3. Export annotated PDF
-            self.export_annotated_pdf()
+            self.exportpdf()
             print("Annotated PDF exported")
             
             # 4. Update status to Closed
@@ -4225,7 +4225,7 @@ class CircuitInspector:
             traceback.print_exc()
 
     # UPDATED: handover_to_production - with checklist check and queue management
-    def handover_to_production(self):
+    def handover(self):
         """Handover current cabinet to production with checklist validation"""
         
         if not self.pdf_document or not self.excel_file:
@@ -4249,7 +4249,7 @@ class CircuitInspector:
                 return
         
         # NEW: Check checklist completion BEFORE handover
-        is_complete, pending_count = self.is_checklist_complete()
+        is_complete, pending_count = self.checklistcomp()
         
         if not is_complete:
             messagebox.showwarning(
@@ -4264,10 +4264,10 @@ class CircuitInspector:
             complete_now=True
             
             if complete_now:
-                self.review_checklist_now()
+                self.reviewnow()
                 
                 # Check again after review
-                is_complete, pending_count = self.is_checklist_complete()
+                is_complete, pending_count = self.checklistcomp()
                 
                 if not is_complete:
                     messagebox.showinfo(
@@ -4279,11 +4279,11 @@ class CircuitInspector:
                 return
         
         # Count open punches
-        open_punches = self.count_open_punches()
+        open_punches = self.countopen()
         
         
         # Save session before handover
-        self.save_session()
+        self.savesession()
         
         # Get user name
         username = self.logged_in_fullname or "Unknown User"
@@ -4338,7 +4338,7 @@ class CircuitInspector:
                                  "Cabinet already in production queue")
 
 
-    def update_interphase_status_for_ref(self, ref_no, status='NOK'):
+    def updatestatsforref(self, ref_no, status='NOK'):
             """Update Interphase status"""
             try:
                 wb = load_workbook(self.excel_file)
@@ -4354,11 +4354,11 @@ class CircuitInspector:
                 username = self.logged_in_fullname or "Unknown User"
                 
                 for r in range(1, ws.max_row + 1):
-                    cell_val = self.read_cell(ws, r, self.interphase_cols['ref_no'])
+                    cell_val = self.readcell(ws, r, self.interphase_cols['ref_no'])
                     if cell_val and str(cell_val).strip() == str(ref_no).strip():
-                        self.write_cell(ws, r, self.interphase_cols['status'], status)
-                        self.write_cell(ws, r, self.interphase_cols['name'], username)
-                        self.write_cell(ws, r, self.interphase_cols['date'], current_date)
+                        self.writecell(ws, r, self.interphase_cols['status'], status)
+                        self.writecell(ws, r, self.interphase_cols['name'], username)
+                        self.writecell(ws, r, self.interphase_cols['date'], current_date)
                         updated_any = True
                 
                 if updated_any:
@@ -4373,12 +4373,12 @@ class CircuitInspector:
     # NEW: finalize_verification - Check checklist, save Excel, export PDF
     # ============================================================================
 
-    def on_closing(self):
+    def onclosing(self):
         """Handle application closing with auto-save"""
         if self.pdf_document and hasattr(self, 'project_dirs'):
             try:
                 print("\n Auto-saving before closing...")
-                self.save_session()
+                self.savesession()
                 print(" Session auto-saved successfully")
                 
                 # Sync stats one last time
@@ -4399,7 +4399,7 @@ class CircuitInspector:
         # Close the application
         self.root.destroy()
 
-    def count_open_punches(self):
+    def countopen(self):
         """Count open punches"""
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):
@@ -4412,11 +4412,11 @@ class CircuitInspector:
             row = 8
             
             while row <= ws.max_row + 5:
-                sr = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
                 if sr is None:
                     break
                 
-                closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                 if not closed:
                     open_count += 1
                 
@@ -4430,7 +4430,7 @@ class CircuitInspector:
             return 0
     
 
-    def save_recent_project(self):
+    def saverecentproj(self):
         """Save current project to database with storage location - HIGHLIGHTER VERSION"""
         if not self.current_pdf_path or not self.excel_file:
             return
@@ -4458,19 +4458,19 @@ class CircuitInspector:
                 project_data['created_date'] = datetime.now().isoformat()
                 self.db.add_project(project_data)
             
-            self.update_recent_dropdown()
+            self.updrecentdropdwn()
             self.sync_manager_stats_only()
             
         except Exception as e:
             print(f"Error saving recent project: {e}")
 
 
-    def load_recent_projects_ui(self):
+    def loadrecprojui(self):
         """Load and display recent projects from SQLite - HIGHLIGHTER VERSION"""
-        self.update_recent_dropdown()
+        self.updrecentdropdwn()
 
 
-    def update_recent_dropdown(self):
+    def updrecentdropdwn(self):
         """Update the recent projects dropdown from database"""
         try:
             recent_projects = self.db.get_recent_projects(limit=20)
@@ -4486,14 +4486,14 @@ class CircuitInspector:
                 label = f"{proj['cabinet_id']} - {proj['project_name']}"
                 menu.add_command(
                     label=label,
-                    command=lambda p=proj: self.load_recent_project_from_db(p)
+                    command=lambda p=proj: self.loadrecentdb(p)
                 )
                 
         except Exception as e:
             print(f"Error updating recent dropdown: {e}")
 
 
-    def load_recent_project_from_db(self, project_data):
+    def loadrecentdb(self, project_data):
         """Load a recent project from database - HIGHLIGHTER VERSION"""
         try:
             # Set project details
@@ -4502,7 +4502,7 @@ class CircuitInspector:
             self.sales_order_no = project_data.get('sales_order_no', '')
             self.storage_location = project_data['storage_location']
             
-            self.prepare_project_folders()
+            self.preparefolders()
             
             expected_excel_path = os.path.join(
                 self.project_dirs["working_excel"],
@@ -4551,28 +4551,28 @@ class CircuitInspector:
             # ADDED: Reset highlighter state
             self.active_highlighter = None
             self.highlight_points = []
-            self.update_color_button()
+            self.colorbutton()
             
             self.root.config(cursor="")
             
             # Set Excel
             self.excel_file = expected_excel_path
             self.working_excel_path = expected_excel_path
-            self.current_sr_no = self.get_next_sr_no()
+            self.current_sr_no = self.getnextsr()
             
             # Load session
             if os.path.exists(expected_session_path):
-                self.load_session_from_path(expected_session_path)
+                self.loadfrompath(expected_session_path)
             else:
                 old_session_path = project_data.get('session_path')
                 if old_session_path and os.path.exists(old_session_path):
                     try:
                         shutil.copy2(old_session_path, expected_session_path)
-                        self.load_session_from_path(expected_session_path)
+                        self.loadfrompath(expected_session_path)
                     except:
-                        self.display_page()
+                        self.display()
                 else:
-                    self.display_page()
+                    self.display()
             
             # Update database
             self.db.update_project(self.cabinet_id, {
@@ -4593,7 +4593,7 @@ class CircuitInspector:
     # UPDATED: count_open_punches - Now counts orange highlights as errors
     # ============================================================================
 
-    def count_open_punches(self):
+    def countopen(self):
         """Count open punches in current Excel - HIGHLIGHTER VERSION"""
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):
@@ -4606,11 +4606,11 @@ class CircuitInspector:
             row = 8
             
             while row <= ws.max_row + 5:
-                sr = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
                 if sr is None:
                     break
                 
-                closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                 if not closed:
                     open_count += 1
                 
@@ -4628,7 +4628,7 @@ class CircuitInspector:
     # ================================================================
 
 
-    def sync_manager_stats(self):
+    def syncstatsmgr(self):
         """LEGACY: Sync statistics while preserving existing status
         
         This is kept for backward compatibility.
@@ -4681,7 +4681,7 @@ class CircuitInspector:
             return False
 
 
-    def count_open_punches(self):
+    def countopen(self):
         """Count open punches in current Excel
         
         Returns:
@@ -4698,11 +4698,11 @@ class CircuitInspector:
             row = 8
             
             while row <= ws.max_row + 5:
-                sr = self.read_cell(ws, row, self.punch_cols['sr_no'])
+                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
                 if sr is None:
                     break
                 
-                closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                 if not closed:
                     open_count += 1
                 
@@ -4733,7 +4733,7 @@ class CircuitInspector:
             # Count punches
             error_anns = [a for a in self.annotations if a.get('type') == 'error']
             total_punches = len(error_anns)
-            open_punches = self.count_open_punches()
+            open_punches = self.countopen()
             
             # Count implemented and closed
             implemented_punches = 0
@@ -4747,11 +4747,11 @@ class CircuitInspector:
                     
                     row = 8
                     while row <= ws.max_row + 5:
-                        checked = self.read_cell(ws, row, self.punch_cols['checked_name'])
+                        checked = self.readcell(ws, row, self.punch_cols['checked_name'])
                         
                         if checked:
-                            implemented = self.read_cell(ws, row, self.punch_cols['implemented_name'])
-                            closed = self.read_cell(ws, row, self.punch_cols['closed_name'])
+                            implemented = self.readcell(ws, row, self.punch_cols['implemented_name'])
+                            closed = self.readcell(ws, row, self.punch_cols['closed_name'])
                             
                             if closed:
                                 closed_punches += 1
@@ -4870,11 +4870,11 @@ class CircuitInspector:
             
             # Start from row 11 (typical Interphase data starts here)
             for row in range(11, ws.max_row + 1):
-                status_cell = self.read_cell(ws, row, 'D')  # Status column
+                status_cell = self.readcell(ws, row, 'D')  # Status column
                 
                 # If status cell has content, check the reference number
                 if status_cell and str(status_cell).strip():
-                    ref_no_cell = self.read_cell(ws, row, 'B')  # Reference column
+                    ref_no_cell = self.readcell(ws, row, 'B')  # Reference column
                     
                     if ref_no_cell:
                         try:
@@ -4989,4 +4989,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
