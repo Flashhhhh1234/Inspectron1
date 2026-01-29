@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 import calendar
 
 
-def get_app_base_dir():
+def getbase():
     """
     Resolve the base directory of the application.
 
@@ -32,7 +32,7 @@ def get_app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def get_financial_year():
+def currentfy():
     """
     Determine the current financial year.
 
@@ -47,7 +47,7 @@ def get_financial_year():
         return f"{today.year - 1}-{str(today.year)[-2:]}"
 
 
-def get_week_number():
+def currentweek():
     """
     Return the ISO calendar week number for the current date.
 
@@ -76,7 +76,7 @@ class ManagerDatabase:
         with the Quality Inspection tool.
         """
         self.db_path = db_path
-        self.init_database()
+        self.initializedb()
         
         # Excel column mapping (same as Quality Inspection tool)
         self.punch_sheet_name = 'Punch Sheet'
@@ -93,7 +93,7 @@ class ManagerDatabase:
             'closed_date': 'J'
         }
     
-    def init_database(self):
+    def initializedb(self):
         """
         Create required SQLite tables if they do not already exist.
     
@@ -165,7 +165,7 @@ class ManagerDatabase:
         target_row, target_col = self._resolve_merged_target(ws, int(row), col_idx)
         return ws.cell(row=target_row, column=target_col).value
     
-    def count_punches_from_excel(self, excel_path):
+    def punchcount(self, excel_path):
         """
         Count punch statistics directly from the Punch Sheet Excel file.
     
@@ -223,7 +223,7 @@ class ManagerDatabase:
             print(f"Error counting punches from Excel: {e}")
             return (0, 0, 0)
     
-    def get_status_from_interphase(self, excel_path):
+    def getstatsfrominterphase(self, excel_path):
         """
         Determine cabinet workflow status from the Interphase worksheet.
     
@@ -298,7 +298,7 @@ class ManagerDatabase:
             print(f"Error reading Interphase worksheet: {e}")
             return None
     
-    def get_all_projects(self):
+    def getallproj(self):
         """
         Retrieve all projects with cabinet counts and last update timestamps.
     
@@ -316,7 +316,7 @@ class ManagerDatabase:
         conn.close()
         return projects
     
-    def get_cabinets_by_project(self, project_name):
+    def getcabinets(self, project_name):
         """
         Retrieve all cabinets for a project with real-time metrics.
     
@@ -338,10 +338,10 @@ class ManagerDatabase:
             cabinet_id, project_name, total_pages, annotated_pages, db_status, excel_path, storage_location = row
             
             # Get real counts from Excel
-            total_punches, implemented_punches, closed_punches = self.count_punches_from_excel(excel_path)
+            total_punches, implemented_punches, closed_punches = self.punchcount(excel_path)
             
             # Try to get status from Interphase worksheet first
-            interphase_status = self.get_status_from_interphase(excel_path)
+            interphase_status = self.getstatsfrominterphase(excel_path)
             
             # Use Interphase status if available, otherwise use database status
             # Only override if the database doesn't have a status set by production/quality code
@@ -368,7 +368,7 @@ class ManagerDatabase:
         conn.close()
         return cabinets
     
-    def search_projects(self, search_term):
+    def searchproj(self, search_term):
         """
         Search projects by name using partial matching.
     
@@ -387,7 +387,7 @@ class ManagerDatabase:
         conn.close()
         return projects
     
-    def get_all_project_names(self):
+    def allprojnames(self):
         """
         Return a list of unique project names.
     
@@ -400,7 +400,7 @@ class ManagerDatabase:
         conn.close()
         return projects
     
-    def get_cabinet_statistics(self):
+    def cabinetstats(self):
         """
         Calculate cabinet counts across time periods.
     
@@ -451,7 +451,7 @@ class ManagerDatabase:
         conn.close()
         return stats
     
-    def get_category_stats(self, start_date=None, end_date=None, project_name=None):
+    def getcatstats(self, start_date=None, end_date=None, project_name=None):
         """
         Retrieve aggregated defect category statistics.
     
@@ -511,16 +511,16 @@ class ManagerUI:
         self.root.title("Manager Dashboard")
         self.root.geometry("1600x900")
         
-        base_dir = get_app_base_dir()
+        base_dir = getbase()
         self.db = ManagerDatabase(os.path.join(base_dir, "manager.db"))
         self.category_file = os.path.join(os.path.dirname(base_dir), "assets", "categories.json")
         self.template_excel_file = os.path.join(base_dir, "Emerson.xlsx")
-        self.categories = self.load_categories()
+        self.categories = self.loadcat()
         
-        self.setup_ui()
-        self.show_dashboard()
+        self.uisetup()
+        self.dashboard()
     
-    def load_categories(self):
+    def loadcat(self):
         """
         Load defect categories from JSON storage.
     
@@ -536,7 +536,7 @@ class ManagerUI:
             pass
         return []
     
-    def save_categories(self):
+    def savecat(self):
         """
         Persist defect categories to disk in JSON format.
     
@@ -549,7 +549,7 @@ class ManagerUI:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save:\n{e}")
     
-    def setup_ui(self):
+    def uisetup(self):
         """
         Construct the main application layout.
     
@@ -572,24 +572,24 @@ class ManagerUI:
         
         self.nav_btns = {}
         self.nav_btns['dashboard'] = tk.Button(nav, text="Dashboard",
-                                               command=self.show_dashboard,
+                                               command=self.dashboard,
                                                bg='#3b82f6', fg='white', **btn_style)
         self.nav_btns['dashboard'].pack(side=tk.LEFT, padx=5)
         
         self.nav_btns['analytics'] = tk.Button(nav, text="Analytics",
-                                               command=self.show_analytics,
+                                               command=self.analytics,
                                                bg='#334155', fg='white', **btn_style)
         self.nav_btns['analytics'].pack(side=tk.LEFT, padx=5)
         
         # RENAMED: Categories -> Defect Library
         self.nav_btns['defect_library'] = tk.Button(nav, text="Defect Library",
-                                                command=self.show_defect_library,
+                                                command=self.showdfctlib,
                                                 bg='#334155', fg='white', **btn_style)
         self.nav_btns['defect_library'].pack(side=tk.LEFT, padx=5)
         
         # NEW: Template Excel Editor
         self.nav_btns['template_editor'] = tk.Button(nav, text="Template Excel",
-                                                command=self.show_template_editor,
+                                                command=self.templatexcleditor,
                                                 bg='#334155', fg='white', **btn_style)
         self.nav_btns['template_editor'].pack(side=tk.LEFT, padx=5)
         
@@ -597,7 +597,7 @@ class ManagerUI:
         self.content = tk.Frame(self.root, bg='#f8fafc')
         self.content.pack(fill=tk.BOTH, expand=True)
     
-    def set_active_nav(self, key):
+    def activenav(self, key):
         """
         Highlight the active navigation button.
     
@@ -606,7 +606,7 @@ class ManagerUI:
         for k, btn in self.nav_btns.items():
             btn.config(bg='#3b82f6' if k == key else '#334155')
     
-    def clear_content(self):
+    def clearcont(self):
         """
         Remove all widgets from the content area.
     
@@ -617,7 +617,7 @@ class ManagerUI:
             w.destroy()
     
     # ============ DASHBOARD - WITH PROPER DATE DISPLAYS AND SEARCH ============
-    def show_dashboard(self):
+    def dashboard(self):
         """
         Render the main dashboard view.
     
@@ -626,8 +626,8 @@ class ManagerUI:
         - Project list with expandable cabinet details
         - Search functionality
         """
-        self.set_active_nav('dashboard')
-        self.clear_content()
+        self.activenav('dashboard')
+        self.clearcont()
         
         # Centered container with 70% width
         center_container = tk.Frame(self.content, bg='#f8fafc')
@@ -637,15 +637,15 @@ class ManagerUI:
         stats_frame = tk.Frame(center_container, bg='#f8fafc')
         stats_frame.pack(fill=tk.X, padx=30, pady=(20, 10))
         
-        stats = self.db.get_cabinet_statistics()
+        stats = self.db.cabinetstats()
         today = datetime.now()
         
         # Create 4 stat cards with proper labels
         stat_cards = [
             (today.strftime("%B %d"), stats['daily'], "#3b82f6"),  # December 31
-            (f"Week {get_week_number()}", stats['weekly'], "#8b5cf6"),  # Week 52
+            (f"Week {currentweek()}", stats['weekly'], "#8b5cf6"),  # Week 52
             (today.strftime("%B"), stats['monthly'], "#10b981"),  # December
-            (f"FY {get_financial_year()}", stats['yearly'], "#f59e0b")  # FY 2024-25
+            (f"FY {currentfy()}", stats['yearly'], "#f59e0b")  # FY 2024-25
         ]
         
         for label, count, color in stat_cards:
@@ -661,7 +661,7 @@ class ManagerUI:
         
         
         
-        projects = self.db.get_all_projects()
+        projects = self.db.getallproj()
         
         if not projects:
             empty_container = tk.Frame(center_container, bg='#f8fafc')
@@ -726,10 +726,10 @@ class ManagerUI:
         def on_search(*args):
             search_term = search_var.get().strip()
             if search_term and search_term != "Search projects...":
-                filtered_projects = self.db.search_projects(search_term)
+                filtered_projects = self.db.searchproj(search_term)
             else:
-                filtered_projects = self.db.get_all_projects()
-            self.update_project_list(scroll_frame, filtered_projects)
+                filtered_projects = self.db.getallproj()
+            self.updtprojlist(scroll_frame, filtered_projects)
         
         search_var.trace('w', on_search)
         search_entry.insert(0, "Search projects...")
@@ -750,9 +750,9 @@ class ManagerUI:
         
         # Store references for search updates
         self.dashboard_scroll_frame = scroll_frame
-        self.update_project_list(scroll_frame, projects)
+        self.updtprojlist(scroll_frame, projects)
     
-    def update_project_list(self, scroll_frame, projects):
+    def updtprojlist(self, scroll_frame, projects):
         """
         Refresh the project cards displayed on the dashboard.
 
@@ -767,9 +767,9 @@ class ManagerUI:
             return
         
         for proj in projects:
-            self.create_project_card(scroll_frame, proj)
+            self.createprojcard(scroll_frame, proj)
     
-    def create_project_card(self, parent, project):
+    def createprojcard(self, parent, project):
         """
         Create a collapsible UI card for a single project.
     
@@ -802,7 +802,7 @@ class ManagerUI:
                 indicator.config(text="▶")
                 expand_var.set(False)
             else:
-                self.populate_cabinets(dropdown, project['project_name'])
+                self.fillcabinets(dropdown, project['project_name'])
                 dropdown.pack(fill=tk.BOTH, padx=15, pady=10)
                 indicator.config(text="▼")
                 expand_var.set(True)
@@ -810,7 +810,7 @@ class ManagerUI:
         header.bind("<Button-1>", lambda e: toggle())
         indicator.bind("<Button-1>", lambda e: toggle())
     
-    def populate_cabinets(self, parent, project_name):
+    def fillcabinets(self, parent, project_name):
         """
         Populate cabinet rows for a selected project.
     
@@ -819,7 +819,7 @@ class ManagerUI:
         for w in parent.winfo_children():
             w.destroy()
         
-        cabinets = self.db.get_cabinets_by_project(project_name)
+        cabinets = self.db.getcabinets(project_name)
         
         if not cabinets:
             tk.Label(parent, text="No cabinets", bg='white').pack(pady=20)
@@ -850,9 +850,9 @@ class ManagerUI:
             
             # Make it clickable to open Excel
             def open_excel(excel_path=cab.get('excel_path')):
-                self.open_excel_file(excel_path)
+                self.opnxcl(excel_path)
             
-            cabinet_label.bind('<Button-1>', lambda e, ep=cab.get('excel_path'): self.open_excel_file(ep))
+            cabinet_label.bind('<Button-1>', lambda e, ep=cab.get('excel_path'): self.opnxcl(ep))
             
             # Add hover effect
             def on_enter(e, lbl=cabinet_label):
@@ -903,7 +903,7 @@ class ManagerUI:
             
             # REMOVED Debug button
     
-    def open_excel_file(self, excel_path):
+    def opnxcl(self, excel_path):
         
         """Open Excel file in default application"""
         if not excel_path or not os.path.exists(excel_path):
@@ -925,7 +925,7 @@ class ManagerUI:
             messagebox.showerror("Error", f"Failed to open Excel file:\n{e}")
     
     # ============ ANALYTICS - INTEGRATED SEARCH WITH FILTERS ============
-    def show_analytics(self):
+    def analytics(self):
         """
         Display the Category Analytics view.
     
@@ -934,8 +934,8 @@ class ManagerUI:
         - Date and level filters
         - Pareto chart visualization
         """
-        self.set_active_nav('analytics')
-        self.clear_content()
+        self.activenav('analytics')
+        self.clearcont()
         
         # Header
         header = tk.Frame(self.content, bg='#f8fafc')
@@ -965,7 +965,7 @@ class ManagerUI:
         suggestion_listbox = tk.Listbox(suggestion_frame, height=5, font=('Segoe UI', 10),
                                        relief=tk.FLAT, bg='#f8fafc', borderwidth=0)
         
-        all_projects = self.db.get_all_project_names()
+        all_projects = self.db.allprojnames()
         
         def update_suggestions(*args):
             
@@ -1133,7 +1133,7 @@ class ManagerUI:
                 start_date = start_date_var.get()
                 end_date = end_date_var.get()
             
-            self.update_chart_with_filters(start_date, end_date, project_filter, level, show_problematic_only)
+            self.updtchartforfilter(start_date, end_date, project_filter, level, show_problematic_only)
         
         # Initial load
         apply_filters()
@@ -1156,7 +1156,7 @@ class ManagerUI:
         search_entry.bind("<FocusOut>", on_focus_out)
         search_entry.bind("<Return>", lambda e: apply_filters())
 
-    def update_chart_with_filters(self, start_date, end_date, project, level, show_problematic_only=False):
+    def updtchartforfilter(self, start_date, end_date, project, level, show_problematic_only=False):
         """
         Generate and render a Pareto chart based on active filters.
     
@@ -1168,7 +1168,7 @@ class ManagerUI:
             w.destroy()
         plt.close('all')
         
-        stats = self.db.get_category_stats(start_date, end_date, project)
+        stats = self.db.getcatstats(start_date, end_date, project)
         
         if not stats:
             empty_frame = tk.Frame(self.chart_frame, bg='white')
@@ -1300,7 +1300,7 @@ class ManagerUI:
 
     
 
-    def export_excel_filtered(self):
+    def exportxcl(self):
         """
         Export analytics data to Excel based on active filters.
     
@@ -1363,13 +1363,13 @@ class ManagerUI:
             # Export based on date filter
             if date_filter in ["month", "quarter"]:
                 # Project-wise data for month and quarter
-                self._export_project_wise(wb, start_date, end_date, date_filter, header_fill, header_font, problematic_fill, border)
+                self.exportprojwise(wb, start_date, end_date, date_filter, header_fill, header_font, problematic_fill, border)
             elif date_filter == "year":
                 # Month-wise data for year
-                self._export_month_wise(wb, start_date, end_date, header_fill, header_font, problematic_fill, border)
+                self.exportmonthly(wb, start_date, end_date, header_fill, header_font, problematic_fill, border)
             else:
                 # Standard export (Category and Subcategory sheets)
-                self._export_standard(wb, start_date, end_date, project_filter, header_fill, header_font, problematic_fill, border)
+                self.exportstd(wb, start_date, end_date, project_filter, header_fill, header_font, problematic_fill, border)
             
             # Save file
             file_path = filedialog.asksaveasfilename(
@@ -1385,9 +1385,9 @@ class ManagerUI:
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export analytics:\n{str(e)}")
 
-    def _export_standard(self, wb, start_date, end_date, project_filter, header_fill, header_font, problematic_fill, border):
+    def exportstd(self, wb, start_date, end_date, project_filter, header_fill, header_font, problematic_fill, border):
         """Standard export with Category and Subcategory sheets"""
-        stats = self.db.get_category_stats(start_date, end_date, project_filter)
+        stats = self.db.getcatstats(start_date, end_date, project_filter)
         
         if not stats:
             messagebox.showwarning("No Data", "No data available for the selected filters.")
@@ -1509,10 +1509,10 @@ class ManagerUI:
             adjusted_width = min(max_length + 2, 50)
             ws_sub.column_dimensions[col_letter].width = adjusted_width
 
-    def _export_project_wise(self, wb, start_date, end_date, date_filter, header_fill, header_font, problematic_fill, border):
+    def exportprojwise(self, wb, start_date, end_date, date_filter, header_fill, header_font, problematic_fill, border):
         """Export project-wise data for month and quarter filters"""
         # Get all projects in the date range
-        all_stats = self.db.get_category_stats(start_date, end_date, None)
+        all_stats = self.db.getcatstats(start_date, end_date, None)
         
         if not all_stats:
             messagebox.showwarning("No Data", "No data available for the selected filters.")
@@ -1654,7 +1654,7 @@ class ManagerUI:
             adjusted_width = min(max_length + 2, 50)
             ws_sub.column_dimensions[col_letter].width = adjusted_width
 
-    def _export_month_wise(self, wb, start_date, end_date, header_fill, header_font, problematic_fill, border):
+    def exportmonthly(self, wb, start_date, end_date, header_fill, header_font, problematic_fill, border):
         """Export month-wise data for year filter"""
         # Parse start and end dates
         start = datetime.strptime(start_date, '%Y-%m-%d')
@@ -1692,7 +1692,7 @@ class ManagerUI:
             month_end = (month_end.date() - timedelta(days=1)).isoformat()
             
             # Get stats for this month
-            stats = self.db.get_category_stats(month_start, month_end, None)
+            stats = self.db.getcatstats(month_start, month_end, None)
             
             if not stats:
                 continue
@@ -1768,7 +1768,7 @@ class ManagerUI:
             month_end = (month_end.date() - timedelta(days=1)).isoformat()
             
             # Get stats for this month
-            stats = self.db.get_category_stats(month_start, month_end, None)
+            stats = self.db.getcatstats(month_start, month_end, None)
             
             if not stats:
                 continue
@@ -1827,15 +1827,15 @@ class ManagerUI:
             adjusted_width = min(max_length + 2, 50)
             ws_sub.column_dimensions[col_letter].width = adjusted_width
     # ============ DEFECT LIBRARY (RENAMED FROM CATEGORIES) ============
-    def show_defect_library(self):
+    def showdfctlib(self):
         """
         Display the Defect Library management interface.
     
         Allows creation, editing, deletion, and testing
         of defect categories and subcategories.
         """
-        self.set_active_nav('defect_library')
-        self.clear_content()
+        self.activenav('defect_library')
+        self.clearcont()
         
         # Centered container
         center_container = tk.Frame(self.content, bg='#f8fafc')
@@ -1848,7 +1848,7 @@ class ManagerUI:
         tk.Label(header, text="Defect Library Management", font=('Segoe UI', 16, 'bold'),
                 bg='#f8fafc').pack(side=tk.LEFT)
         
-        tk.Button(header, text="➕ Add Defect Type", command=self.add_category,
+        tk.Button(header, text="➕ Add Defect Type", command=self.addcat,
                  bg='#10b981', fg='white', font=('Segoe UI', 10, 'bold'),
                  padx=15, pady=8).pack(side=tk.RIGHT)
         
@@ -1893,9 +1893,9 @@ class ManagerUI:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
         for cat in self.categories:
-            self.create_category_card(scroll_frame, cat)
+            self.createcatcard(scroll_frame, cat)
 
-    def create_category_card(self, parent, category):
+    def createcatcard(self, parent, category):
         card = tk.Frame(parent, bg='white', relief=tk.SOLID, borderwidth=1)
         card.pack(fill=tk.X, pady=8, padx=5)
         
@@ -1931,44 +1931,44 @@ class ManagerUI:
         btn_frame = tk.Frame(header, bg='#dbeafe')
         btn_frame.pack(side=tk.RIGHT, padx=10)
         
-        tk.Button(btn_frame, text="Edit", command=lambda: self.edit_category(category),
+        tk.Button(btn_frame, text="Edit", command=lambda: self.modcat(category),
                  bg='#3b82f6', fg='white', font=('Segoe UI', 9, 'bold'),
                  padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         
-        tk.Button(btn_frame, text="Delete", command=lambda: self.delete_category(category),
+        tk.Button(btn_frame, text="Delete", command=lambda: self.delcat(category),
                  bg='#ef4444', fg='white', font=('Segoe UI', 9, 'bold'),
                  padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         
         if mode == 'parent':
-            tk.Button(btn_frame, text="Add Sub", command=lambda: self.add_subcategory(category),
+            tk.Button(btn_frame, text="Add Sub", command=lambda: self.addsub(category),
                      bg='#10b981', fg='white', font=('Segoe UI', 9, 'bold'),
                      padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         elif mode == 'wiring_selector':
-            tk.Button(btn_frame, text="Add Wiring Sub", command=lambda: self.add_wiring_subcategory(category),
+            tk.Button(btn_frame, text="Add Wiring Sub", command=lambda: self.addwriringsub(category),
                      bg='#10b981', fg='white', font=('Segoe UI', 9, 'bold'),
                      padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
             # Add special subcategory button
             if 'special_subcategories' in category:
-                tk.Button(btn_frame, text="Add Special Sub", command=lambda: self.add_special_subcategory(category),
+                tk.Button(btn_frame, text="Add Special Sub", command=lambda: self.addsplsub(category),
                          bg='#8b5cf6', fg='white', font=('Segoe UI', 9, 'bold'),
                          padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         elif mode == 'template':
-            tk.Button(btn_frame, text="🧪 Test", command=lambda: self.handle_template_category(category),
+            tk.Button(btn_frame, text="🧪 Test", command=lambda: self.handltempcat(category),
                      bg='#8b5cf6', fg='white', font=('Segoe UI', 9, 'bold'),
                      padx=12, pady=6, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=3)
         
         # Display wiring types for wiring_selector mode
         if mode == 'wiring_selector':
-            self.display_wiring_types(card, category)
+            self.wiringtypes(card, category)
         # Display regular subcategories for parent mode
         elif category.get('subcategories'):
             sub_frame = tk.Frame(card, bg='white')
             sub_frame.pack(fill=tk.X, padx=20, pady=10)
             
             for sub in category['subcategories']:
-                self.display_subcategory_row(sub_frame, category, sub)
+                self.subcatrow(sub_frame, category, sub)
 
-    def display_wiring_types(self, card, category):
+    def wiringtypes(self, card, category):
         """Display wiring types and their subcategories"""
         wiring_frame = tk.Frame(card, bg='white')
         wiring_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -2002,7 +2002,7 @@ class ManagerUI:
                     sub_container.pack(fill=tk.X, padx=10, pady=5)
                     
                     for sub in wiring_type['subcategories']:
-                        self.display_wiring_subcategory_row(sub_container, category, wiring_type, sub)
+                        self.wiringsubrow(sub_container, category, wiring_type, sub)
         
         # Display special subcategories
         if category.get('special_subcategories'):
@@ -2014,9 +2014,9 @@ class ManagerUI:
                     bg='#fef3c7', fg='#92400e').pack(anchor='w', padx=10, pady=5)
             
             for sub in category['special_subcategories']:
-                self.display_special_subcategory_row(special_frame, category, sub)
+                self.splsubrow(special_frame, category, sub)
 
-    def display_subcategory_row(self, parent, category, sub):
+    def subcatrow(self, parent, category, sub):
         """Display a regular subcategory row"""
         sub_row = tk.Frame(parent, bg='#f8fafc')
         sub_row.pack(fill=tk.X, pady=3)
@@ -2036,21 +2036,21 @@ class ManagerUI:
         sub_btn_frame.pack(side=tk.RIGHT, padx=10)
         
         tk.Button(sub_btn_frame, text="Test",
-                 command=lambda: self.handle_subcategory(category, sub),
+                 command=lambda: self.handlsub(category, sub),
                  bg='#8b5cf6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=10, pady=5, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Edit",
-                 command=lambda: self.edit_subcategory(category, sub),
+                 command=lambda: self.editsub(category, sub),
                  bg='#3b82f6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=10, pady=5, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Delete",
-                 command=lambda: self.delete_subcategory(category, sub),
+                 command=lambda: self.delsub(category, sub),
                  bg='#ef4444', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=10, pady=5, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
 
-    def display_wiring_subcategory_row(self, parent, category, wiring_type, sub):
+    def wiringsubrow(self, parent, category, wiring_type, sub):
         """Display a wiring subcategory row"""
         sub_row = tk.Frame(parent, bg='#f8fafc')
         sub_row.pack(fill=tk.X, pady=2)
@@ -2070,21 +2070,21 @@ class ManagerUI:
         sub_btn_frame.pack(side=tk.RIGHT, padx=10)
         
         tk.Button(sub_btn_frame, text="Test",
-                 command=lambda: self.handle_subcategory(category, sub),
+                 command=lambda: self.handlsub(category, sub),
                  bg='#8b5cf6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Edit",
-                 command=lambda: self.edit_wiring_subcategory(category, wiring_type, sub),
+                 command=lambda: self.editwiringsub(category, wiring_type, sub),
                  bg='#3b82f6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Delete",
-                 command=lambda: self.delete_wiring_subcategory(category, wiring_type, sub),
+                 command=lambda: self.delwiringsub(category, wiring_type, sub),
                  bg='#ef4444', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
 
-    def display_special_subcategory_row(self, parent, category, sub):
+    def splsubrow(self, parent, category, sub):
         """Display a special subcategory row"""
         sub_row = tk.Frame(parent, bg='#fffbeb')
         sub_row.pack(fill=tk.X, pady=2)
@@ -2104,22 +2104,22 @@ class ManagerUI:
         sub_btn_frame.pack(side=tk.RIGHT, padx=10)
         
         tk.Button(sub_btn_frame, text="Test",
-                 command=lambda: self.handle_subcategory(category, sub),
+                 command=lambda: self.handlsub(category, sub),
                  bg='#8b5cf6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Edit",
-                 command=lambda: self.edit_special_subcategory(category, sub),
+                 command=lambda: self.editsplsub(category, sub),
                  bg='#3b82f6', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
         
         tk.Button(sub_btn_frame, text="Delete",
-                 command=lambda: self.delete_special_subcategory(category, sub),
+                 command=lambda: self.delsplsub(category, sub),
                  bg='#ef4444', fg='white', font=('Segoe UI', 8, 'bold'),
                  padx=8, pady=4, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
 
     # Category management methods
-    def collect_template_data(self, mandatory=True, existing=None, include_ref=False):
+    def coltempdata(self, mandatory=True, existing=None, include_ref=False):
         """
         Collect structured input data for template-based categories.
     
@@ -2191,7 +2191,7 @@ class ManagerUI:
         
         return result
 
-    def create_category(self):
+    def crtcat(self):
         name = simpledialog.askstring("New Category", "Enter category name:", parent=self.root)
         if not name:
             return None
@@ -2221,7 +2221,7 @@ class ManagerUI:
         
         if choice == 'yes':
             category["mode"] = "template"
-            data = self.collect_template_data(mandatory=False, include_ref=False)
+            data = self.coltempdata(mandatory=False, include_ref=False)
             if data:
                 category.update(data)
         else:
@@ -2240,8 +2240,8 @@ class ManagerUI:
         
         return category
 
-    def add_category(self):
-        cat = self.create_category()
+    def addcat(self):
+        cat = self.crtcat()
         if not cat:
             return
         
@@ -2250,10 +2250,10 @@ class ManagerUI:
             return
         
         self.categories.append(cat)
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def edit_category(self, category):
+    def modcat(self, category):
         mode = category.get('mode')
         
         if not mode:
@@ -2284,7 +2284,7 @@ class ManagerUI:
         # Template-specific editing
         if mode == 'template':
             if category.get('inputs'):
-                updated = self.collect_template_data(mandatory=False, existing=category, include_ref=False)
+                updated = self.coltempdata(mandatory=False, existing=category, include_ref=False)
                 if updated:
                     category["inputs"] = updated["inputs"]
                     category["template"] = updated["template"]
@@ -2298,18 +2298,18 @@ class ManagerUI:
                 if new_template is not None:
                     category["template"] = new_template.strip()
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def delete_category(self, category):
+    def delcat(self, category):
         if not messagebox.askyesno("Confirm", f"Delete category '{category['name']}'?"):
             return
         self.categories.remove(category)
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
     # Wiring category methods
-    def add_wiring_subcategory(self, category):
+    def addwriringsub(self, category):
         """Add a subcategory to a wiring type"""
         # Ask which wiring types to add to
         dialog = tk.Toplevel(self.root)
@@ -2355,7 +2355,7 @@ class ManagerUI:
         if not name:
             return
         
-        data = self.collect_template_data(mandatory=True, include_ref=True)
+        data = self.coltempdata(mandatory=True, include_ref=True)
         if not data:
             return
         
@@ -2389,16 +2389,16 @@ class ManagerUI:
                 **data
             })
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def add_special_subcategory(self, category):
+    def addsplsub(self, category):
         """Add a special subcategory (not tied to wiring type)"""
         name = simpledialog.askstring("New Special Subcategory", "Enter subcategory name:", parent=self.root)
         if not name:
             return
         
-        data = self.collect_template_data(mandatory=True, include_ref=True)
+        data = self.coltempdata(mandatory=True, include_ref=True)
         if not data:
             return
         
@@ -2410,12 +2410,12 @@ class ManagerUI:
             **data
         })
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def edit_wiring_subcategory(self, category, wiring_type, subcategory):
+    def editwiringsub(self, category, wiring_type, subcategory):
         """Edit a wiring subcategory"""
-        updated = self.collect_template_data(mandatory=True, existing=subcategory, include_ref=True)
+        updated = self.coltempdata(mandatory=True, existing=subcategory, include_ref=True)
         if not updated:
             return
         
@@ -2432,12 +2432,12 @@ class ManagerUI:
         subcategory.update(updated)
         subcategory["name"] = new_name.strip()
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def edit_special_subcategory(self, category, subcategory):
+    def editsplsub(self, category, subcategory):
         """Edit a special subcategory"""
-        updated = self.collect_template_data(mandatory=True, existing=subcategory, include_ref=True)
+        updated = self.coltempdata(mandatory=True, existing=subcategory, include_ref=True)
         if not updated:
             return
         
@@ -2454,35 +2454,35 @@ class ManagerUI:
         subcategory.update(updated)
         subcategory["name"] = new_name.strip()
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def delete_wiring_subcategory(self, category, wiring_type, sub):
+    def delwiringsub(self, category, wiring_type, sub):
         if not messagebox.askyesno("Confirm", f"Delete subcategory '{sub['name']}'?"):
             return
         
         if 'subcategories' in wiring_type:
             wiring_type['subcategories'].remove(sub)
-            self.save_categories()
-            self.show_defect_library()
+            self.savecat()
+            self.showdfctlib()
 
-    def delete_special_subcategory(self, category, sub):
+    def delsplsub(self, category, sub):
         if not messagebox.askyesno("Confirm", f"Delete special subcategory '{sub['name']}'?"):
             return
         
         if 'special_subcategories' in category:
             category['special_subcategories'].remove(sub)
-            self.save_categories()
-            self.show_defect_library()
+            self.savecat()
+            self.showdfctlib()
 
     # Regular subcategory methods
-    def add_subcategory(self, category):
+    def addsub(self, category):
         """Add a regular subcategory to a parent category"""
         name = simpledialog.askstring("New Subcategory", "Enter subcategory name:", parent=self.root)
         if not name:
             return
         
-        data = self.collect_template_data(mandatory=True, include_ref=True)
+        data = self.coltempdata(mandatory=True, include_ref=True)
         if not data:
             return
         
@@ -2490,13 +2490,13 @@ class ManagerUI:
             category['subcategories'] = []
         
         category["subcategories"].append({"name": name.strip(), **data})
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def edit_subcategory(self, category, subcategory):
+    def editsub(self, category, subcategory):
         """Edit a regular subcategory"""
         if subcategory.get('inputs'):
-            updated = self.collect_template_data(mandatory=True, existing=subcategory, include_ref=True)
+            updated = self.coltempdata(mandatory=True, existing=subcategory, include_ref=True)
             if not updated:
                 return
             
@@ -2543,19 +2543,19 @@ class ManagerUI:
             subcategory['ref_number'] = new_ref.strip() if new_ref else ""
             subcategory['template'] = new_template.strip()
         
-        self.save_categories()
-        self.show_defect_library()
+        self.savecat()
+        self.showdfctlib()
 
-    def delete_subcategory(self, category, sub):
+    def delsub(self, category, sub):
         if not messagebox.askyesno("Confirm", f"Delete subcategory '{sub['name']}'?"):
             return
         
         if 'subcategories' in category:
             category['subcategories'].remove(sub)
-            self.save_categories()
-            self.show_defect_library()
+            self.savecat()
+            self.showdfctlib()
 
-    def run_template(self, template_def, tag_name=None):
+    def runtemp(self, template_def, tag_name=None):
         """
         Execute a punch text template by prompting the user for inputs.
     
@@ -2581,10 +2581,10 @@ class ManagerUI:
             messagebox.showerror("Template Error", f"Missing placeholder: {e}")
             return None
 
-    def handle_template_category(self, category, bbox_page=None):
+    def handltempcat(self, category, bbox_page=None):
         """Handle template category execution"""
         if category.get('inputs'):
-            punch_text = self.run_template(category, tag_name=None)
+            punch_text = self.runtemp(category, tag_name=None)
             if not punch_text:
                 return
         else:
@@ -2593,10 +2593,10 @@ class ManagerUI:
         messagebox.showinfo("Generated Punch Text", 
                           f"Category: {category['name']}\n\nPunch Text:\n{punch_text}")
 
-    def handle_subcategory(self, category, subcategory, bbox_page=None):
+    def handlsub(self, category, subcategory, bbox_page=None):
         """Handle subcategory execution"""
         if subcategory.get('inputs'):
-            punch_text = self.run_template(subcategory, tag_name=None)
+            punch_text = self.runtemp(subcategory, tag_name=None)
             if not punch_text:
                 return
         else:
@@ -2605,7 +2605,7 @@ class ManagerUI:
         messagebox.showinfo("Generated Punch Text",
                           f"Category: {category['name']}\nSubcategory: {subcategory['name']}\n\nPunch Text:\n{punch_text}")
     # ============ NEW: TEMPLATE EXCEL EDITOR ============
-    def show_template_editor(self):
+    def templatexcleditor(self):
         """
         Display the Template Excel Editor interface.
     
@@ -2615,8 +2615,8 @@ class ManagerUI:
         - Exporting copies
         - Verifying structure integrity
         """
-        self.set_active_nav('template_editor')
-        self.clear_content()
+        self.activenav('template_editor')
+        self.clearcont()
         
         # Centered container
         center_container = tk.Frame(self.content, bg='#f8fafc')
@@ -2662,17 +2662,17 @@ Template Location: {self.template_excel_file}
         
         # Open template button
         tk.Button(action_frame, text="📂 Open Template Excel",
-                 command=self.open_template_excel,
+                 command=self.opnxcl,
                  bg='#3b82f6', fg='white', **btn_style).pack(padx=20, pady=(0, 10))
         
         # Replace template button
         tk.Button(action_frame, text="🔄 Replace Template File",
-                 command=self.replace_template_excel,
+                 command=self.replacexcl,
                  bg='#f59e0b', fg='white', **btn_style).pack(padx=20, pady=(0, 10))
         
         # Export template button
         tk.Button(action_frame, text="💾 Export Template Copy",
-                 command=self.export_template_copy,
+                 command=self.xporttempcopy,
                  bg='#10b981', fg='white', **btn_style).pack(padx=20, pady=(0, 15))
         
         # Template structure info
@@ -2700,11 +2700,11 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
         
         # Check template button
         tk.Button(structure_frame, text="✓ Verify Template Structure",
-                 command=self.verify_template_structure,
+                 command=self.verifttempstruct,
                  bg='#8b5cf6', fg='white', font=('Segoe UI', 10, 'bold'),
                  padx=20, pady=10, relief=tk.FLAT, cursor='hand2').pack(pady=(0, 20))
     
-    def open_template_excel(self):
+    def opnxcl(self):
         """Open template Excel file in default application"""
         if not os.path.exists(self.template_excel_file):
             messagebox.showerror("Template Not Found", 
@@ -2729,7 +2729,7 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open template:\n{e}")
     
-    def replace_template_excel(self):
+    def replacexcl(self):
         """Replace template Excel with a new file"""
         confirm = messagebox.askyesno(
             "Replace Template",
@@ -2789,7 +2789,7 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
         except Exception as e:
             messagebox.showerror("Error", f"Failed to replace template:\n{e}")
     
-    def export_template_copy(self):
+    def xporttempcopy(self):
         """Export a copy of the template"""
         save_path = filedialog.asksaveasfilename(
             title="Save Template Copy As",
@@ -2810,7 +2810,7 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export template:\n{e}")
     
-    def verify_template_structure(self):
+    def verifttempstruct(self):
         """Verify template Excel structure"""
         if not os.path.exists(self.template_excel_file):
             messagebox.showerror("Template Not Found", 
@@ -2878,7 +2878,12 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
                                f"Failed to verify template:\n{e}")
     
     # ============ REPORT GENERATOR ============
+''' 
+add report generator for future scope 
+report generator is basically supposed to a PDF summary of current projects/
+any project showcasing problems , status data of closing etc.
 
+'''
 
 def main():
     root = tk.Tk()
