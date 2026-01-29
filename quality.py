@@ -48,7 +48,7 @@ def base():
 
 class ManagerDB:
     """Manager database integration with storage_location and excel_path support"""
-    def initialize(self, db_path):
+    def __init__(self, db_path):
         self.db_path = db_path
         self.initializedb()
     
@@ -302,7 +302,7 @@ class ManagerDB:
 
 
 class CircuitInspector:
-    def initialize(self, root):
+    def __init__(self, root):
         self.root = root
         self.logged_in_username = User
         self.logged_in_fullname = Name
@@ -4989,3 +4989,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
