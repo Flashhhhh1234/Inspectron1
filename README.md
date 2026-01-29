@@ -146,9 +146,10 @@ Inspectron/
 4. **Set Tesseract Path** (Windows)
    - In `quality.py`, update the path:
    ```python
-   TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-   if os.path.exists(TESSERACT_PATH):
-       pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+   path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+   if os.path.exists(path):
+       pytesseract.pytesseract.tesseract_cmd = path
+   
    ```
 
 5. **Launch Application**
