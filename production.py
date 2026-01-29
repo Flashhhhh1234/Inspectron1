@@ -21,13 +21,13 @@ from handover_database import HandoverDB
 from database_manager import DatabaseManager
 import sys
 
-LOGGED_IN_USERNAME = sys.argv[1] if len(sys.argv) > 1 else None
-LOGGED_IN_FULLNAME = sys.argv[2] if len(sys.argv) > 2 else None
+User = sys.argv[1] if len(sys.argv) > 1 else None
+Name = sys.argv[2] if len(sys.argv) > 2 else None
 
-print(f"✓ Production Tool started by: {LOGGED_IN_FULLNAME} (username: {LOGGED_IN_USERNAME})")
+print(f"✓ Production Tool started by: {Name} (username: {User})")
 
 
-def get_app_base_dir():
+def getbase():
     """Returns the directory where the app is running from"""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
@@ -39,9 +39,9 @@ class ManagerDB:
     
     def __init__(self, db_path):
         self.db_path = db_path
-        self.init_database()
+        self.initializedatabase()
     
-    def init_database(self):
+    def initializedatabase(self):
         """Initialize tables if they don't exist"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -86,7 +86,7 @@ class ManagerDB:
         conn.commit()
         conn.close()
     
-    def update_cabinet(self, cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
+    def updcab(self, cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
                       total_punches, open_punches, implemented_punches, closed_punches, status,
                       storage_location=None, excel_path=None):
         """Update cabinet statistics WITH excel_path and storage_location"""
@@ -110,7 +110,7 @@ class ManagerDB:
             
             conn.commit()
             conn.close()
-            print(f"Manager DB: Updated {cabinet_id} - Status: {status}")
+            print(f"✓ Manager DB: Updated {cabinet_id} - Status: {status}")
             return True
         except Exception as e:
             print(f"Manager DB update error: {e}")
@@ -118,7 +118,7 @@ class ManagerDB:
             traceback.print_exc()
             return False
     
-    def update_status(self, cabinet_id, status):
+    def updstats(self, cabinet_id, status):
         """Update cabinet status only"""
         try:
             conn = sqlite3.connect(self.db_path)
@@ -132,7 +132,7 @@ class ManagerDB:
             
             conn.commit()
             conn.close()
-            print(f"Manager DB: Status updated for {cabinet_id} → {status}")
+            print(f"✓ Manager DB: Status updated for {cabinet_id} → {status}")
             return True
         except Exception as e:
             print(f"Status update error: {e}")
@@ -142,12 +142,12 @@ class ManagerDB:
 class ProductionTool:
     def __init__(self, root):
         self.root = root
-        self.logged_in_username = LOGGED_IN_USERNAME
-        self.logged_in_fullname = LOGGED_IN_FULLNAME
+        self.logged_in_username = User
+        self.logged_in_fullname = Name
         self.root.title("Production Tool - Highlighter Mode")
         self.root.geometry("1400x900")
         # Bind window close event to auto-save
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.protocol("WM_DELETE_WINDOW", self.closing)
         
         # Data / files
         self.pdf_document = None
@@ -159,8 +159,8 @@ class ProductionTool:
         self.storage_location = ""
         self.annotations = []
         
-        base = get_app_base_dir()
-        self.handover_db = HandoverDB(os.path.join(base, "handover.db"))
+        base = getbase()
+        self.handover_db = HandoverDB(os.path.join(base, "handover_db.json"))
         self.db = DatabaseManager(os.path.join(base, "inspection_tool.db"))
         self.manager_db = ManagerDB(os.path.join(base, "manager.db"))
         
@@ -241,14 +241,14 @@ class ProductionTool:
         self.undo_stack = []
         self.max_undo = 50
         
-        self.setup_ui()
-        self.current_sr_no = self.get_next_sr_no()
+        self.uisetup()
+        self.current_sr_no = self.getnextsr()
 
     # ================================================================
     # MANAGER SYNC - PRODUCTION SPECIFIC
     # ================================================================
     
-    def sync_manager_stats(self):
+    def syncmgrstats(self):
         """Sync current cabinet statistics to manager database"""
         if not self.cabinet_id:
             return
@@ -292,7 +292,7 @@ class ProductionTool:
             
             open_punches = total_punches - implemented_punches - closed_punches
             
-            self.manager_db.update_cabinet(
+            self.manager_db.updcab(
                 self.cabinet_id,
                 self.project_name,
                 self.sales_order_no,
@@ -312,11 +312,11 @@ class ProductionTool:
             import traceback
             traceback.print_exc()
     
-    def sync_manager_stats_only(self):
+    def syncmgrstatsonly(self):
         """Lightweight sync without full recount - for display updates"""
         # Only sync if we have the necessary data loaded
         if self.cabinet_id and self.excel_file:
-            self.sync_manager_stats()
+            self.syncmgrstats()
 
     # ================================================================
     # CELL HELPERS
@@ -355,7 +355,7 @@ class ProductionTool:
     # MODERN UI SETUP
     # ================================================================
     
-    def setup_ui(self):
+    def uisetup(self):
         """Setup modern professional UI with highlighter mode"""
         # Main toolbar
         toolbar = tk.Frame(self.root, bg='#1e293b', height=70)
@@ -368,38 +368,38 @@ class ProductionTool:
         # File Menu
         file_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="📁 File", menu=file_menu)
-        file_menu.add_command(label="Load from Production Queue", command=self.load_from_handover_queue, accelerator="Ctrl+O")
+        file_menu.add_command(label="Load from Production Queue", command=self.loadfrmhandover, accelerator="Ctrl+O")
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         
         # Tools Menu
         tools_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="🛠️ Tools", menu=tools_menu)
-        tools_menu.add_command(label=" Production Mode", command=self.production_mode, accelerator="Ctrl+P")
+        tools_menu.add_command(label="🏭 Production Mode", command=self.prodmode, accelerator="Ctrl+P")
         tools_menu.add_separator()
-        tools_menu.add_command(label="✅ Complete & Handback", command=self.complete_rework_handback, accelerator="Ctrl+H")
+        tools_menu.add_command(label="✅ Complete & Handback", command=self.compreworkhndbck, accelerator="Ctrl+H")
         
         # View Menu
         view_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
         menubar.add_cascade(label="👁️ View", menu=view_menu)
-        view_menu.add_command(label="Zoom In", command=self.zoom_in, accelerator="Ctrl++")
-        view_menu.add_command(label="Zoom Out", command=self.zoom_out, accelerator="Ctrl+-")
-        view_menu.add_command(label="Reset Zoom", command=lambda: setattr(self, 'zoom_level', 1.0) or self.display_page())
+        view_menu.add_command(label="Zoom In", command=self.zoom, accelerator="Ctrl++")
+        view_menu.add_command(label="Zoom Out", command=self.zoomout, accelerator="Ctrl+-")
+        view_menu.add_command(label="Reset Zoom", command=lambda: setattr(self, 'zoom_level', 1.0) or self.display())
         
         # Keyboard shortcuts
-        self.root.bind_all("<Control-o>", lambda e: self.load_from_handover_queue())
-        self.root.bind_all("<Control-p>", lambda e: self.production_mode())
-        self.root.bind_all("<Control-h>", lambda e: self.complete_rework_handback())
-        self.root.bind_all("<Control-plus>", lambda e: self.zoom_in())
-        self.root.bind_all("<Control-minus>", lambda e: self.zoom_out())
-        self.root.bind_all("<Control-z>", lambda e: self.undo_last_action())
+        self.root.bind_all("<Control-o>", lambda e: self.loadfrmhandover())
+        self.root.bind_all("<Control-p>", lambda e: self.prodmode())
+        self.root.bind_all("<Control-h>", lambda e: self.compreworkhndbck())
+        self.root.bind_all("<Control-plus>", lambda e: self.zoom())
+        self.root.bind_all("<Control-minus>", lambda e: self.zoomout())
+        self.root.bind_all("<Control-z>", lambda e: self.undolast())
         self.root.bind_all("<Escape>", lambda e: self.deactivate_all())
         
         # Left section - Load operations
         left_frame = tk.Frame(toolbar, bg='#1e293b')
         left_frame.pack(side=tk.LEFT, padx=10, pady=10)
         
-        tk.Button(left_frame, text="📦 Load from Queue", command=self.load_from_handover_queue,
+        tk.Button(left_frame, text="📦 Load from Queue", command=self.loadfrmhandover,
                  bg='#8b5cf6', fg='white', padx=15, pady=10,
                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, borderwidth=0,
                  cursor='hand2').pack(side=tk.LEFT, padx=3)
@@ -420,9 +420,9 @@ class ProductionTool:
             'cursor': 'hand2'
         }
         
-        tk.Button(center_frame, text="◀", command=self.prev_page, width=3,
+        tk.Button(center_frame, text="◀", command=self.prev, width=3,
                  **nav_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(center_frame, text="▶", command=self.next_page, width=3,
+        tk.Button(center_frame, text="▶", command=self.next, width=3,
                  **nav_btn_style).pack(side=tk.LEFT, padx=2)
         
         # Zoom controls
@@ -432,9 +432,9 @@ class ProductionTool:
         zoom_btn_style = nav_btn_style.copy()
         zoom_btn_style['bg'] = '#10b981'
         
-        tk.Button(zoom_frame, text="🔍+", command=self.zoom_in, width=4,
+        tk.Button(zoom_frame, text="🔍+", command=self.zoom, width=4,
                  **zoom_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(zoom_frame, text="🔍−", command=self.zoom_out, width=4,
+        tk.Button(zoom_frame, text="🔍−", command=self.zoomout, width=4,
                  **zoom_btn_style).pack(side=tk.LEFT, padx=2)
         
         # Tool section - Pen, Text, Undo
@@ -449,7 +449,7 @@ class ProductionTool:
         self.text_btn = None
         
         try:
-            assets_dir = os.path.join(os.path.dirname(get_app_base_dir()), "assets")
+            assets_dir = os.path.join(os.path.dirname(getbase()), "assets")
             icon_size = (44, 44)
             
             pen_icon_path = os.path.join(assets_dir, "pen_icon.png")
@@ -465,19 +465,19 @@ class ProductionTool:
             self.undo_icon = ImageTk.PhotoImage(undo_img)
             
             self.pen_btn = tk.Button(tool_frame, image=self.pen_icon, 
-                                     command=lambda: self.set_tool_mode("pen"),
+                                     command=lambda: self.settlmd("pen"),
                                      bg='#334155', width=48, height=48, 
                                      relief=tk.FLAT, cursor='hand2')
             self.pen_btn.pack(side=tk.LEFT, padx=2)
             
             self.text_btn = tk.Button(tool_frame, image=self.text_icon, 
-                                      command=lambda: self.set_tool_mode("text"),
+                                      command=lambda: self.settlmd("text"),
                                       bg='#334155', width=48, height=48, 
                                       relief=tk.FLAT, cursor='hand2')
             self.text_btn.pack(side=tk.LEFT, padx=2)
             
             self.undo_btn = tk.Button(tool_frame, image=self.undo_icon,
-                                      command=self.undo_last_action,
+                                      command=self.undolast,
                                       bg='#334155', width=48, height=48, 
                                       relief=tk.FLAT, cursor='hand2')
             self.undo_btn.pack(side=tk.LEFT, padx=2)
@@ -485,22 +485,22 @@ class ProductionTool:
         except Exception as e:
             print(f"Could not load tool icons: {e}")
             # Fallback to text buttons
-            self.pen_btn = tk.Button(tool_frame, text="Pen", 
-                     command=lambda: self.set_tool_mode("pen"),
+            self.pen_btn = tk.Button(tool_frame, text="✏️ Pen", 
+                     command=lambda: self.settlmd("pen"),
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
                      cursor='hand2')
             self.pen_btn.pack(side=tk.LEFT, padx=2)
             
-            self.text_btn = tk.Button(tool_frame, text="Text", 
-                     command=lambda: self.set_tool_mode("text"),
+            self.text_btn = tk.Button(tool_frame, text="🅰️ Text", 
+                     command=lambda: self.settlmd("text"),
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
                      cursor='hand2')
             self.text_btn.pack(side=tk.LEFT, padx=2)
             
-            tk.Button(tool_frame, text="Undo",
-                     command=self.undo_last_action,
+            tk.Button(tool_frame, text="↶ Undo",
+                     command=self.undolast,
                      bg='#334155', fg='white', padx=10, pady=8,
                      font=('Segoe UI', 9, 'bold'), relief=tk.FLAT,
                      cursor='hand2').pack(side=tk.LEFT, padx=2)
@@ -509,12 +509,12 @@ class ProductionTool:
         right_frame = tk.Frame(toolbar, bg='#1e293b')
         right_frame.pack(side=tk.RIGHT, padx=10, pady=10)
         
-        tk.Button(right_frame, text=" Production Mode", command=self.production_mode,
+        tk.Button(right_frame, text="🏭 Production Mode", command=self.prodmode,
                  bg='#f59e0b', fg='white', padx=15, pady=10,
                  font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, borderwidth=0,
                  cursor='hand2').pack(side=tk.LEFT, padx=3)
         
-        tk.Button(right_frame, text="✅ Handback to Quality", command=self.complete_rework_handback,
+        tk.Button(right_frame, text="✅ Handback to Quality", command=self.compreworkhndbck,
                  bg='#10b981', fg='white', padx=15, pady=10,
                  font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, borderwidth=0,
                  cursor='hand2').pack(side=tk.LEFT, padx=3)
@@ -539,11 +539,11 @@ class ProductionTool:
         h_scrollbar.config(command=self.canvas.xview)
         
         # Bind mouse events - CRITICAL FOR PEN AND TEXT TOOLS
-        self.canvas.bind("<ButtonPress-1>", self.on_left_press)
-        self.canvas.bind("<B1-Motion>", self.on_left_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_left_release)
-        self.canvas.bind("<Double-Button-1>", self.on_double_left_zoom)
-        self.canvas.bind("<Double-Button-3>", self.on_double_right_zoom)
+        self.canvas.bind("<ButtonPress-1>", self.leftclick)
+        self.canvas.bind("<B1-Motion>", self.leftdrag)
+        self.canvas.bind("<ButtonRelease-1>", self.leftrls)
+        self.canvas.bind("<Double-Button-1>", self.doubleclick)
+        self.canvas.bind("<Double-Button-3>", self.doubleright)
         
         # Modern status bar
         status_bar = tk.Frame(self.root, bg='#334155', height=40)
@@ -553,7 +553,7 @@ class ProductionTool:
         tk.Label(status_bar, text=instructions_text, bg='#334155', fg='#e2e8f0',
                 font=('Segoe UI', 9), pady=10).pack()
     
-    def update_tool_pane(self):
+    def updtoolpane(self):
         """Placeholder for tool pane update - not needed in production mode"""
         pass
 
@@ -561,7 +561,7 @@ class ProductionTool:
     # LOAD FROM HANDOVER QUEUE - WITH AUTO-OPEN PRODUCTION MODE
     # ================================================================
     
-    def load_from_handover_queue(self):
+    def loadfrmhandover(self):
         """Load item from production handover queue"""
         pending_items = self.handover_db.get_pending_production_items()
         
@@ -632,7 +632,7 @@ class ProductionTool:
             
             item = pending_items[selection[0]]
             dlg.destroy()
-            self.load_handover_item(item)
+            self.loadhndovritm(item)
         
         # Buttons
         btn_frame = tk.Frame(dlg, bg='#f8fafc')
@@ -654,7 +654,7 @@ class ProductionTool:
         
         listbox.bind('<Double-Button-1>', lambda e: load_selected())
     
-    def load_handover_item(self, item):
+    def loadhndovritm(self, item):
         """Load a handover item - WITH AUTO-OPEN PRODUCTION MODE"""
         try:
             # Verify files exist
@@ -699,7 +699,7 @@ class ProductionTool:
             
             if item.get('session_path') and os.path.exists(item['session_path']):
                 print(f"✓ Session file exists, loading...")
-                self.load_session_from_path(item['session_path'])
+                self.loadsessfrompath(item['session_path'])
                 print(f"After loading: {len(self.annotations)} annotations loaded")
                 
                 # Debug: Show what's in annotations
@@ -714,7 +714,7 @@ class ProductionTool:
                           f"has_bbox_page={'bbox_page' in ann}, "
                           f"sr_no={ann.get('sr_no')}")
             else:
-                print(f"No session file found")
+                print(f"⚠️ No session file found")
                 self.annotations = []
                 self.session_refs.clear()
             
@@ -730,29 +730,29 @@ class ProductionTool:
             )
             
             # Update manager status
-            self.manager_db.update_status(self.cabinet_id, 'in_progress')
-            self.sync_manager_stats()
+            self.manager_db.updstats(self.cabinet_id, 'in_progress')
+            self.syncmgrstats()
             
-            self.display_page()
+            self.display()
             
             
             # AUTO-OPEN PRODUCTION MODE
-            self.root.after(500, self.production_mode)
+            self.root.after(500, self.prodmode)
         
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load item:\n{e}")
             import traceback
             traceback.print_exc()
-    def on_closing(self):
+    def closing(self):
         """Handle application closing with auto-save"""
         if self.pdf_document and hasattr(self, 'project_dirs'):
             try:
                 print("\n🔄 Auto-saving before closing...")
-                self.save_session()
+                self.savesess()
                 print("✓ Session auto-saved successfully")
                 
                 # Sync stats one last time
-                self.sync_manager_stats_only()
+                self.syncmgrstatsonly()
                 print("✓ Statistics synced")
                 
             except Exception as e:
@@ -772,7 +772,7 @@ class ProductionTool:
     # COMPLETE REWORK & HANDBACK - CHECK IMPLEMENTED COLUMN
     # ================================================================
     
-    def complete_rework_handback(self):
+    def compreworkhndbck(self):
         """Complete rework and handback to Quality"""
         if not self.pdf_document or not self.excel_file:
             messagebox.showwarning("No Item Loaded", 
@@ -786,15 +786,15 @@ class ProductionTool:
             return
         
         # Check for punches without implementation
-        not_implemented = self.get_punches_without_implementation()
+        not_implemented = self.findnotimplemented()
         if not_implemented:
-            self.show_not_implemented_dialog(not_implemented)
+            self.shownotimplemented(not_implemented)
             return
         
         # AUTO-SAVE SESSION BEFORE HANDBACK
         print("Auto-saving session before handback...")
         try:
-            self.save_session()
+            self.savesess()
             print("✓ Session auto-saved successfully")
         except Exception as e:
             print(f"⚠️ Session auto-save failed: {e}")
@@ -809,7 +809,7 @@ class ProductionTool:
             "sales_order_no": self.sales_order_no,
             "pdf_path": self.current_pdf_path,
             "excel_path": self.excel_file,
-            "session_path": self.get_session_path_for_pdf(),
+            "session_path": self.getsesspathforpdf(),
             "rework_completed_by": username,
             "rework_completed_date": datetime.now().isoformat(),
             "production_remarks": remarks or "No remarks"
@@ -818,8 +818,8 @@ class ProductionTool:
         success = self.handover_db.add_production_handback(handback_data)
         
         if success:
-            self.sync_manager_stats()
-            self.manager_db.update_status(self.cabinet_id, 'being_closed_by_quality')
+            self.syncmgrstats()
+            self.manager_db.updstats(self.cabinet_id, 'being_closed_by_quality')
             
             messagebox.showinfo(
                 "Handback Complete",
@@ -842,7 +842,7 @@ class ProductionTool:
         else:
             messagebox.showerror("Error", "Failed to handback item to Quality.")
     
-    def get_punches_without_implementation(self):
+    def findnotimplemented(self):
         """Get list of punches without 'Implemented By'"""
         not_implemented = []
         
@@ -893,7 +893,7 @@ class ProductionTool:
             print(f"Error checking implementation: {e}")
             return []
     
-    def show_not_implemented_dialog(self, not_implemented):
+    def shownotimplemented(self, not_implemented):
         """Show dialog listing punches without implementation"""
         dlg = tk.Toplevel(self.root)
         dlg.title("⚠️ Implementation Required")
@@ -954,18 +954,18 @@ class ProductionTool:
     # ENHANCED PRODUCTION MODE WITH HIGHLIGHTER NAVIGATION
     # ================================================================
     
-    def production_mode(self):
+    def prodmode(self):
         """Production mode with highlighter navigation"""
         if not self.pdf_document or not self.excel_file:
             messagebox.showwarning("No Item", 
                                  "Please load an item from the production queue first.")
             return
         
-        punches = self.read_open_punches_from_excel()
+        punches = self.openpunches()
         
         if not punches:
             messagebox.showinfo("No Punches", 
-                              " All punches are closed!\n"
+                              "✓ All punches are closed!\n"
                               "You can now handback to Quality.", 
                               icon='info')
             return
@@ -985,7 +985,7 @@ class ProductionTool:
         header_frame.pack(fill=tk.X)
         header_frame.pack_propagate(False)
         
-        tk.Label(header_frame, text=" PRODUCTION MODE - HIGHLIGHTER",
+        tk.Label(header_frame, text="🖍️ PRODUCTION MODE - HIGHLIGHTER",
                 bg='#f59e0b', fg='white',
                 font=('Segoe UI', 14, 'bold')).pack(pady=15)
         
@@ -1074,7 +1074,7 @@ class ProductionTool:
             # Display quality remarks from quality team
             if ann and ann.get('quality_remark'):
                 text_widget.insert(tk.END, f"\n───────────────────────\n")
-                text_widget.insert(tk.END, " Quality Remarks:\n")
+                text_widget.insert(tk.END, "📋 Quality Remarks:\n")
                 text_widget.insert(tk.END, ann['quality_remark'])
             
             # Display previous implementation remarks
@@ -1085,7 +1085,7 @@ class ProductionTool:
             
             text_widget.config(state=tk.DISABLED)
             
-            self.navigate_to_punch_highlighter(p['sr_no'], p['punch_text'])
+            self.navtopunch(p['sr_no'], p['punch_text'])
         
         show_item()
         
@@ -1114,7 +1114,7 @@ class ProductionTool:
                 wb.save(self.excel_file)
                 wb.close()
                 
-                self.sync_manager_stats()
+                self.syncmgrstats()
             
             except PermissionError:
                 messagebox.showerror("File Locked",
@@ -1142,10 +1142,10 @@ class ProductionTool:
                 show_item()
             else:
                 messagebox.showinfo("Complete",
-                                  " All punches reviewed!\n"
+                                  "✓ All punches reviewed!\n"
                                   "You can now handback to Quality.",
                                   icon='info', parent=dlg)
-                self.clear_production_visuals()
+                self.clrborderhighlight()
                 self.production_dialog_open = False
                 dlg.destroy()
         
@@ -1160,7 +1160,7 @@ class ProductionTool:
                 show_item()
         
         def on_close():
-            self.clear_production_visuals()
+            self.clrborderhighlight()
             self.production_dialog_open = False
             dlg.destroy()
         
@@ -1178,19 +1178,19 @@ class ProductionTool:
             'pady': 12
         }
         
-        tk.Button(btn_frame, text="<- Previous", command=prev_item,
+        tk.Button(btn_frame, text="◀ Previous", command=prev_item,
                  bg='#94a3b8', fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
         
-        tk.Button(btn_frame, text="MARK DONE", command=mark_implemented,
+        tk.Button(btn_frame, text="✓ MARK DONE", command=mark_implemented,
                  bg='#10b981', fg='white', width=16, **btn_style).pack(side=tk.LEFT, padx=5)
         
-        tk.Button(btn_frame, text="Next ->", command=next_item,
+        tk.Button(btn_frame, text="Next ▶", command=next_item,
                  bg='#94a3b8', fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
         
         tk.Button(btn_frame, text="Close", command=on_close,
                  bg='#64748b', fg='white', width=10, **btn_style).pack(side=tk.RIGHT, padx=5)
     
-    def navigate_to_punch_highlighter(self, sr_no, punch_text):
+    def navtopunch(self, sr_no, punch_text):
         """Navigate to highlighter annotation and highlight it - UPDATED FOR HIGHLIGHTER"""
         target_ann = None
         
@@ -1221,7 +1221,7 @@ class ProductionTool:
                 target_ann = best_match
                 print(f"✓ Found annotation by text match, SR: {best_match.get('sr_no')}")
         
-        self.clear_production_visuals()
+        self.clrborderhighlight()
         
         if target_ann:
             print(f"Navigating to annotation:")
@@ -1232,18 +1232,18 @@ class ProductionTool:
             
             if target_ann.get('page') is not None:
                 self.current_page = target_ann['page']
-                self.display_page()
+                self.display()
             
             # Highlight the annotation visually
             if 'points_page' in target_ann or 'bbox_page' in target_ann:
-                self.highlight_annotation_visual(target_ann)
+                self.highlightannonvisual(target_ann)
                 self._last_highlighted_ann = target_ann
         else:
-            print(f" No annotation found for SR {sr_no}")
+            print(f"⚠️ No annotation found for SR {sr_no}")
             print(f"Available annotation types: {set(a.get('type') for a in self.annotations)}")
             print(f"Available SR numbers: {set(a.get('sr_no') for a in self.annotations if a.get('sr_no'))}")
     
-    def highlight_annotation_visual(self, annotation):
+    def highlightannonvisual(self, annotation):
         """Draw visual indicators for highlighter annotation - UPDATED"""
         # Calculate bounding box from points_page or use bbox_page
         if 'points_page' in annotation and annotation['points_page']:
@@ -1258,7 +1258,7 @@ class ProductionTool:
             bbox_display = self.bbox_page_to_display(annotation['bbox_page'])
             print(f"  Using bbox_page: {annotation['bbox_page']}")
         else:
-            print(" Annotation has no points_page or bbox_page - cannot highlight")
+            print("⚠️ Annotation has no points_page or bbox_page - cannot highlight")
             return
         
         x1, y1, x2, y2 = bbox_display
@@ -1340,12 +1340,12 @@ class ProductionTool:
         
         print(f"✓ Visual highlight added at display coords: {bbox_display}")
     
-    def clear_production_visuals(self):
+    def clrborderhighlight(self):
         """Clear production mode visual indicators"""
         self.canvas.delete('production_highlight')
         self.production_highlight_tags.clear()
     
-    def read_open_punches_from_excel(self):
+    def openpunches(self):
         """Read open punches from Excel - row 9 onwards"""
         punches = []
         
@@ -1392,7 +1392,7 @@ class ProductionTool:
     # TOOL MODES - PEN, TEXT, UNDO
     # ================================================================
     
-    def set_tool_mode(self, mode):
+    def settlmd(self, mode):
         """Set tool mode (pen or text)"""
         # Deactivate highlighter if active (not applicable in production tool, but kept for consistency)
         if hasattr(self, 'active_highlighter') and self.active_highlighter:
@@ -1419,15 +1419,15 @@ class ProductionTool:
     def deactivate_all(self):
         """Deactivate all tools"""
         if self.tool_mode:
-            self.set_tool_mode(self.tool_mode)
+            self.settlmd(self.tool_mode)
         
         self.drawing = False
         self.drawing_type = None
         self.pen_points = []
         self.temp_line_ids = []
-        self.display_page()
+        self.display()
     
-    def update_tool_pane(self):
+    def updtoolpane(self):
         """Update annotation statistics - placeholder"""
         pass
     
@@ -1459,7 +1459,7 @@ class ProductionTool:
     # UNDO FUNCTIONALITY
     # ================================================================
     
-    def add_to_undo_stack(self, action_type, annotation):
+    def addtoundostck(self, action_type, annotation):
         """Add an action to the undo stack"""
         self.undo_stack.append({
             'type': action_type,
@@ -1469,7 +1469,7 @@ class ProductionTool:
         if len(self.undo_stack) > self.max_undo:
             self.undo_stack.pop(0)
     
-    def undo_last_action(self):
+    def undolast(self):
         """Undo the last annotation action"""
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
@@ -1481,16 +1481,16 @@ class ProductionTool:
             annotation = last_action['annotation']
             if annotation in self.annotations:
                 self.annotations.remove(annotation)
-                self.display_page()
+                self.display()
                 self._flash_status("✓ Annotation removed", bg='#10b981')
         
-        self.update_tool_pane()
+        self.updtoolpane()
     
     # ================================================================
     # MOUSE EVENT HANDLERS - PEN AND TEXT
     # ================================================================
     
-    def on_left_press(self, event):
+    def leftclick(self, event):
         """Handle left mouse button press"""
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -1515,7 +1515,7 @@ class ProductionTool:
             self.text_pos_y = y
             return
     
-    def on_left_drag(self, event):
+    def leftdrag(self, event):
         """Handle left mouse button drag"""
         if not self.drawing:
             return
@@ -1536,7 +1536,7 @@ class ProductionTool:
             self.pen_points.append((x, y))
             return
     
-    def on_left_release(self, event):
+    def leftrls(self, event):
         """Handle left mouse button release"""
         if not self.pdf_document or not self.drawing:
             return
@@ -1552,13 +1552,13 @@ class ProductionTool:
                     'timestamp': datetime.now().isoformat()
                 }
                 self.annotations.append(annotation)
-                self.add_to_undo_stack('add_annotation', annotation)
+                self.addtoundostck('add_annotation', annotation)
             self.pen_points = []
             self.clear_temp_drawings()
             self.drawing = False
             self.drawing_type = None
-            self.display_page()
-            self.update_tool_pane()
+            self.display()
+            self.updtoolpane()
             self._flash_status("✓ Pen stroke added", bg='#10b981')
             return
 
@@ -1575,19 +1575,19 @@ class ProductionTool:
                     'timestamp': datetime.now().isoformat()
                 }
                 self.annotations.append(annotation)
-                self.add_to_undo_stack('add_annotation', annotation)
-                self.display_page()
-                self._flash_status("Text added", bg='#10b981')
+                self.addtoundostck('add_annotation', annotation)
+                self.display()
+                self._flash_status("✓ Text added", bg='#10b981')
             self.drawing = False
             self.drawing_type = None
-            self.update_tool_pane()
+            self.updtoolpane()
             return
 
     # ================================================================
     # DISPLAY PAGE - HIGHLIGHTER RENDERING ONLY (NO BOXES)
     # ================================================================
     
-    def display_page(self):
+    def display(self):
         """Render the current PDF page with HIGHLIGHTER annotations ONLY - NO BOXES"""
         if not self.pdf_document:
             self.canvas.delete("all")
@@ -1699,12 +1699,12 @@ class ProductionTool:
                     print(f"  ⚠️ Skipping box annotation (boxes are disabled)")
 
             print(f"Rendered annotations:")
-            print(f"  ️ Highlights: {highlight_count}")
-            print(f"    Errors (as highlights): {error_count}")
-            print(f"  ️ Pen strokes: {pen_count}")
-            print(f"  ️ Text: {text_count}")
+            print(f"  🖍️ Highlights: {highlight_count}")
+            print(f"  ❌ Errors (as highlights): {error_count}")
+            print(f"  ✏️ Pen strokes: {pen_count}")
+            print(f"  🅰️ Text: {text_count}")
             if box_count > 0:
-                print(f" Boxes (skipped): {box_count}")
+                print(f"  📦 Boxes (skipped): {box_count}")
             print(f"{'='*40}\n")
 
             self.photo = ImageTk.PhotoImage(img)
@@ -1712,7 +1712,7 @@ class ProductionTool:
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
             self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
             self.page_label.config(text=f"Page: {self.current_page + 1}/{len(self.pdf_document)}")
-            self.sync_manager_stats_only()
+            self.syncmgrstatsonly()
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to display page: {e}")
@@ -1723,7 +1723,7 @@ class ProductionTool:
     # COORDINATE CONVERSION HELPERS
     # ================================================================
     
-    def get_next_sr_no(self):
+    def getnextsr(self):
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):
                 return 1
@@ -1866,7 +1866,7 @@ class ProductionTool:
         
         return transformed_points
     
-    def zoom_at_point(self, canvas_x, canvas_y, zoom_delta):
+    def zoomin(self, canvas_x, canvas_y, zoom_delta):
         if not self.pdf_document:
             return
         
@@ -1877,7 +1877,7 @@ class ProductionTool:
             return
         
         self.zoom_level = new_zoom
-        self.display_page()
+        self.display()
         
         scale = new_zoom / old_zoom
         bbox = self.canvas.bbox("all")
@@ -1887,45 +1887,45 @@ class ProductionTool:
         self.canvas.xview_moveto((canvas_x * scale) / max(1, bbox[2]))
         self.canvas.yview_moveto((canvas_y * scale) / max(1, bbox[3]))
     
-    def on_double_left_zoom(self, event):
+    def doubleclick(self, event):
         self.drawing = False
         self.temp_highlight_id = None
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
-        self.zoom_at_point(x, y, +0.25)
+        self.zoomin(x, y, +0.25)
     
-    def on_double_right_zoom(self, event):
+    def doubleright(self, event):
         self.drawing = False
         self.temp_highlight_id = None
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
-        self.zoom_at_point(x, y, -0.25)
+        self.zoomin(x, y, -0.25)
     
-    def prev_page(self):
+    def prev(self):
         if self.pdf_document and self.current_page > 0:
             self.current_page -= 1
-            self.display_page()
+            self.display()
     
-    def next_page(self):
+    def next(self):
         if self.pdf_document and self.current_page < len(self.pdf_document) - 1:
             self.current_page += 1
-            self.display_page()
+            self.display()
     
-    def zoom_in(self):
+    def zoom(self):
         if self.zoom_level < 3.0:
             self.zoom_level += 0.25
-            self.display_page()
+            self.display()
     
-    def zoom_out(self):
+    def zoomout(self):
         if self.zoom_level > 0.5:
             self.zoom_level -= 0.25
-            self.display_page()
+            self.display()
 
     # ================================================================
     # SESSION MANAGEMENT - HIGHLIGHTER COMPATIBLE
     # ================================================================
     
-    def get_session_path_for_pdf(self):
+    def getsesspathforpdf(self):
         """Get session path for current PDF"""
         if not self.current_pdf_path or not self.cabinet_id:
             return None
@@ -1949,14 +1949,14 @@ class ProductionTool:
         
         return None
     
-    def save_session(self):
+    def savesess(self):
         """Save current session to JSON file with all annotation types"""
         if not self.pdf_document:
-            print("No PDF loaded - cannot save session")
+            print("⚠️ No PDF loaded - cannot save session")
             return
         
         if not hasattr(self, 'storage_location') or not self.storage_location:
-            print(" Storage location not set - cannot save session")
+            print("⚠️ Storage location not set - cannot save session")
             return
         
         # Determine save path
@@ -2032,20 +2032,20 @@ class ProductionTool:
             print(f"\n✓ Session saved to: {save_path}")
             print(f"Total annotations: {len(self.annotations)}")
             if highlight_count > 0:
-                print(f" Highlights: {highlight_count}")
+                print(f"  🖍️ Highlights: {highlight_count}")
             if error_count > 0:
-                print(f" Errors: {error_count}")
+                print(f"  ❌ Errors: {error_count}")
             if pen_count > 0:
-                print(f" Pen strokes: {pen_count}")
+                print(f"  ✏️ Pen strokes: {pen_count}")
             if text_count > 0:
-                print(f" Text annotations: {text_count}")
+                print(f"  🅰️ Text annotations: {text_count}")
             
         except Exception as e:
-            print(f" Failed to save session: {e}")
+            print(f"❌ Failed to save session: {e}")
             import traceback
             traceback.print_exc()
     
-    def load_session_from_path(self, path):
+    def loadsessfrompath(self, path):
         """Load annotation session - FULL HIGHLIGHTER SUPPORT"""
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -2101,7 +2101,7 @@ class ProductionTool:
             # ===== BOX ANNOTATIONS - Count but skip =====
             if ann_type == 'box':
                 box_count += 1
-                print(f" Skipping box annotation (type='box') - boxes are disabled")
+                print(f"  ⚠️ Skipping box annotation (type='box') - boxes are disabled")
                 continue  # Skip box annotations
             
             # Ensure text content is restored
@@ -2114,16 +2114,16 @@ class ProductionTool:
             if ann.get('ref_no'):
                 self.session_refs.add(str(ann['ref_no']).strip())
         
-        self.display_page()
+        self.display()
         
         print(f"\n✓ Session loaded from: {path}")
         print(f"Total annotations loaded: {len(self.annotations)}")
-        print(f"  ️ Highlights: {highlight_count}")
-        print(f"   Errors (as highlights): {error_count}")
-        print(f"  ️ Pen strokes: {pen_count}")
-        print(f"  ️ Text annotations: {text_count}")
+        print(f"  🖍️ Highlights: {highlight_count}")
+        print(f"  ❌ Errors (as highlights): {error_count}")
+        print(f"  ✏️ Pen strokes: {pen_count}")
+        print(f"  🅰️ Text annotations: {text_count}")
         if box_count > 0:
-            print(f" Box annotations (skipped): {box_count}")
+            print(f"  📦 Box annotations (skipped): {box_count}")
         
         types_loaded = {}
         for ann in self.annotations:
