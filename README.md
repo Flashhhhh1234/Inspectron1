@@ -142,8 +142,7 @@ Inspectron/
          ├──handover_database.py
          ├──Login.py
 ```
-
-4. **Set Tesseract Path** (Windows)
+### Set Tesseract Path (Windows)
    - In `quality.py`, update the path:
    ```python
    path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -152,7 +151,7 @@ Inspectron/
    
    ```
 
-5. **Launch Application**
+ ### Launch Application
    ```bash
    python Login.py
    ```
