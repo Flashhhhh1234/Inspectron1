@@ -36,7 +36,12 @@ if os.path.exists(path):
     pytesseract.pytesseract.tesseract_cmd = path
     
 def base():
-    """Returns the directory where the app is running from."""
+    """
+    Returns the directory where the app is running from.
+    FUNCTIONAL USE: Determines if app is frozen (compiled) or running from source code.
+    Used to construct absolute paths for config files, databases, and resources.
+    Returns: Directory path string (either compiled executable dir or script dir)
+    """
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +58,12 @@ class ManagerDB:
         self.initializedb()
     
     def initializedb(self):
-        """Initialize tables if they don't exist"""
+        """
+        Create database schema with cabinets and category_occurrences tables.
+        FUNCTIONAL USE: Initializes persistent storage for cabinet metadata, punch statistics,
+        and status tracking. Adds missing columns to existing tables if needed.
+        Schema includes: cabinet_id, project info, punch counts, status, dates, storage location, excel_path
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -98,7 +108,12 @@ class ManagerDB:
         conn.close()
 
     def splitcell(self, cell_ref):
-        
+        """
+        Parse Excel cell reference (e.g., 'A1', 'B42') into row and column components.
+        FUNCTIONAL USE: Splits Excel notation into numeric row and string column for openpyxl operations.
+        Args: cell_ref - Cell reference string (e.g., 'B5', 'H10')
+        Returns: Tuple of (row_number, column_letter)
+        """
         import re
         m = re.match(r"([A-Z]+)(\d+)", cell_ref)
         if not m:
@@ -107,14 +122,26 @@ class ManagerDB:
         return int(row), col
 
     def mergedtar(self, ws, row, col_idx):
-        """Handle merged cells"""
+        """
+        Find actual cell coordinates when target cell is part of a merged cell range.
+        FUNCTIONAL USE: Handles merged cells in Excel by returning the top-left cell of merge range.
+        Ensures writes/reads go to correct cell even when targeting merged area.
+        Args: ws - Worksheet, row - row number, col_idx - column index
+        Returns: Tuple of (actual_row, actual_col) accounting for merges
+        """
         for merged in ws.merged_cells.ranges:
             if merged.min_row <= row <= merged.max_row and merged.min_col <= col_idx <= merged.max_col:
                 return merged.min_row, merged.min_col
         return row, col_idx
 
     def read(self, ws, row, col):
-        """Read cell value handling merged cells"""
+        """
+        Read value from Excel cell, handling merged cells and column format conversion.
+        FUNCTIONAL USE: Unified read interface that accepts column as letter ('A') or number (1).
+        Automatically finds actual cell if target is part of merged range.
+        Args: ws - Worksheet, row - row number, col - column (letter or index)
+        Returns: Cell value (string, number, date, etc.)
+        """
         from openpyxl.utils import column_index_from_string
         
         if isinstance(col, str):
@@ -125,9 +152,13 @@ class ManagerDB:
         return ws.cell(row=target_row, column=target_col).value
 
     def interphase_status(self, excel_path):
-        """Read Interphase worksheet and determine status based on HIGHEST filled reference number
-        
-        Returns: status string or None if not determined from Interphase
+        """
+        Determine cabinet status by reading highest reference number in Interphase sheet.
+        FUNCTIONAL USE: Reads Interphase worksheet to calculate assembly progress.
+        Maps highest filled reference to status (assembly_in_progress, assembly_complete, final_check, etc.).
+        Used by quality inspection to track assembly completion stage.
+        Args: excel_path - Full path to Excel file
+        Returns: Status string or None if not determined from Interphase
         """
         if not excel_path or not os.path.exists(excel_path):
             return None
@@ -196,7 +227,12 @@ class ManagerDB:
                       total_pages, annotated_pages, total_punches, 
                       open_punches, implemented_punches, closed_punches, status,
                       storage_location=None, excel_path=None):
-        """Update cabinet statistics"""
+        """
+        Insert or replace complete cabinet record with all statistics and metadata.
+        FUNCTIONAL USE: Updates manager dashboard with cabinet progress: punch counts, implementation status,
+        storage location, and associated Excel file path. Creates record if new, updates if exists.
+        Used by quality module to sync work progress with manager system.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -223,7 +259,12 @@ class ManagerDB:
             return False
     
     def logcatoccurence(self, cabinet_id, project_name, category, subcategory):
-        """Log a category occurrence"""
+        """
+        Record an instance of a category/subcategory occurrence for analytics.
+        FUNCTIONAL USE: Logs quality issues found by category for dashboard reporting.
+        Tracks patterns and frequencies of defect types across projects.
+        Args: cabinet_id, project_name, category, subcategory - Metadata for occurrence
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -242,7 +283,11 @@ class ManagerDB:
             return False
     
     def updatestats(self, cabinet_id, status):
-        """Update cabinet status only"""
+        """
+        Update cabinet status field and last_updated timestamp.
+        FUNCTIONAL USE: Lightweight status-only update for quality workflow transitions.
+        Updates database with current date/time to track inspection progress.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -412,10 +457,21 @@ class CircuitInspector:
     # ================================================================
     
     def page_to_display_scale(self):
+        """
+        Calculate scaling factor from PDF page coordinates to display canvas.
+        FUNCTIONAL USE: Accounts for zoom level (default 2x magnification plus user zoom).
+        Used to convert between PDF space and canvas rendering space.
+        """
         return 2.0 * self.zoom_level
 
     def display_to_page_coords(self, pts):
-        """Convert display-space coordinates to page-space coordinates."""
+        """
+        Convert canvas display coordinates back to PDF page space.
+        FUNCTIONAL USE: Reverses scaling from display_scale to find annotation position in PDF.
+        Handles single point tuple or list of points.
+        Args: pts - Single (x, y) tuple or list of [(x1, y1), (x2, y2), ...]
+        Returns: Same structure but with page-space coordinates
+        """
         scale = self.page_to_display_scale()
         
         # Handle single point tuple
@@ -427,7 +483,13 @@ class CircuitInspector:
         return [(x / scale, y / scale) for x, y in pts]
 
     def page_to_display_coords(self, pts):
-        """Convert page-space coordinates to display-space coordinates."""
+        """
+        Convert PDF page coordinates to canvas display space.
+        FUNCTIONAL USE: Scales from PDF space to display space for rendering annotations on canvas.
+        Handles single point tuple or list of points.
+        Args: pts - Single (x, y) tuple or list of [(x1, y1), (x2, y2), ...]
+        Returns: Same structure but with display-space coordinates
+        """
         scale = self.page_to_display_scale()
         
         # Handle single point tuple
@@ -439,11 +501,23 @@ class CircuitInspector:
         return [(x * scale, y * scale) for x, y in pts]
 
     def bbox_page_to_display(self, bbox_page):
+        """
+        Convert bounding box from PDF coordinates to display coordinates.
+        FUNCTIONAL USE: Scales rectangle coordinates for rendering on canvas.
+        Args: bbox_page - Tuple (x1, y1, x2, y2) in PDF space
+        Returns: Tuple (x1, y1, x2, y2) in display space
+        """
         scale = self.page_to_display_scale()
         x1, y1, x2, y2 = bbox_page
         return (x1 * scale, y1 * scale, x2 * scale, y2 * scale)
 
     def bbox_display_to_page(self, bbox_display):
+        """
+        Convert bounding box from display coordinates to PDF coordinates.
+        FUNCTIONAL USE: Reverses scaling to find annotation position in original PDF.
+        Args: bbox_display - Tuple (x1, y1, x2, y2) in display space
+        Returns: Tuple (x1, y1, x2, y2) in PDF space
+        """
         scale = self.page_to_display_scale()
         x1, y1, x2, y2 = bbox_display
         return (x1 / scale, y1 / scale, x2 / scale, y2 / scale)
@@ -453,7 +527,13 @@ class CircuitInspector:
     # ================================================================
     
     def Straighten(self, points):
-        """Convert a freehand path into a straight line from start to end."""
+        """
+        Convert a freehand path into a straight line from start to end.
+        FUNCTIONAL USE: Simplifies highlighter annotations to perfect straight lines.
+        Removes freehand waviness for cleaner annotation rendering.
+        Args: points - List of (x, y) tuples representing freehand path
+        Returns: List containing only start and end points
+        """
         if len(points) < 2:
             return points
         # Simply return start and end points for a perfectly straight line
@@ -464,7 +544,12 @@ class CircuitInspector:
     # ================================================================
 
     def leftclick(self, event):
-        """Handle left mouse button press"""
+        """
+        Handle mouse down event for highlighter/pen/text drawing and annotation interactions.
+        FUNCTIONAL USE: Initiates highlighter/pen stroke, text entry, or annotation selection.
+        Routes to appropriate handler based on active tool mode (highlight, pen, text).
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
             return
@@ -497,7 +582,12 @@ class CircuitInspector:
             return
 
     def leftdrag(self, event):
-        """Handle left mouse button drag"""
+        """
+        Handle mouse movement during button press for continuous drawing.
+        FUNCTIONAL USE: Extends pen/highlighter stroke with new points, updates temporary preview on canvas.
+        Called repeatedly during drag motion to render real-time feedback.
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         if not self.drawing:
             return
 
@@ -541,7 +631,12 @@ class CircuitInspector:
             return
 
     def leftrel(self, event):
-        """Handle left mouse button release with OCR text extraction"""
+        """
+        Handle mouse up event to finalize drawing/annotation and extract text via OCR.
+        FUNCTIONAL USE: Completes pen/highlighter stroke, runs OCR on highlighted area,
+        saves annotation with extracted text to session, triggers error categorization dialog.
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         if not self.pdf_document or not self.drawing:
             return
 
@@ -641,7 +736,11 @@ class CircuitInspector:
     # Replace your existing handle_error_highlight method
     # ============================================================================
     def loadcat(self):
-        """Load categories from JSON"""
+        """
+        Load category definitions from categories.json configuration file.
+        FUNCTIONAL USE: Populates self.categories with inspection categories, subcategories, and templates.
+        Enables dynamic error classification and punch list generation based on categories.
+        """
         try:
             if os.path.exists(self.category_file):
                 with open(self.category_file, "r", encoding='utf-8') as f:
@@ -664,7 +763,14 @@ class CircuitInspector:
 
 
     def exctracttxt(self, annotation):
-        """Extract text from highlighted area with automatic padding and rotation support - OPTIMIZED"""
+        """
+        Extract text from highlighted annotation area using OCR with intelligent preprocessing.
+        FUNCTIONAL USE: Captures text from quality issues (error/wiring highlights) using Tesseract OCR.
+        Automatically expands highlight area, sharpens image, and handles rotation.
+        Enables automatic error documentation and punch list generation.
+        Args: annotation - Dictionary with highlight bbox and page info
+        Returns: Extracted and cleaned text string or None if OCR fails
+        """
         if self.current_page_image is None:
             return None
         
@@ -774,13 +880,10 @@ class CircuitInspector:
 
     def caps(self, text):
         """
-        Check if text is in all caps (ignoring non-letter characters)
-        
-        Args:
-            text: Text to check
-            
-        Returns:
-            bool: True if all letters are uppercase, False otherwise
+        Check if text is in all caps (ignoring non-letter characters).
+        FUNCTIONAL USE: Determines if OCR text should be classified as all-uppercase for quality metrics.
+        Args: text - Text to check
+        Returns: bool - True if all letters are uppercase, False otherwise
         """
         if not text:
             return False
@@ -798,13 +901,11 @@ class CircuitInspector:
 
     def ocrcon(self, pil_image):
         """
-        Helper method to run OCR and calculate confidence
-        
-        Args:
-            pil_image: PIL Image object
-            
-        Returns:
-            tuple: (text, average_confidence)
+        Run OCR and calculate average confidence score.
+        FUNCTIONAL USE: Executes Tesseract OCR on image and measures extraction reliability.
+        High confidence indicates good OCR quality, low suggests manual review needed.
+        Args: pil_image - PIL Image object to extract text from
+        Returns: Tuple of (extracted_text, average_confidence_percent)
         """
         try:
             # Get OCR data with confidence scores
@@ -840,13 +941,11 @@ class CircuitInspector:
 
     def cleantxt(self, text):
         """
-        Clean OCR output text - optimized version
-        
-        Args:
-            text: Raw OCR text
-            
-        Returns:
-            str: Cleaned text or None
+        Clean OCR output text by removing artifacts and normalizing.
+        FUNCTIONAL USE: Improves OCR text quality by fixing common misrecognitions.
+        Converts pipe to I, fixes quotes, removes non-printable characters.
+        Args: text - Raw OCR text with potential errors
+        Returns: str - Cleaned text or None if too short
         """
         if not text:
             return None
@@ -876,7 +975,11 @@ class CircuitInspector:
 
     def extracttxtsimple(self, annotation):
         """
-        Simplified OCR extraction - Just upscale and try
+        Simplified OCR extraction with basic preprocessing.
+        FUNCTIONAL USE: Fallback method for quick text extraction when full processing unavailable.
+        Uses upscaling and basic grayscale conversion for text recognition.
+        Args: annotation - Dictionary with highlight area bbox
+        Returns: Extracted text or None if OCR fails
         """
         if self.current_page_image is None:
             print("No image loaded")
@@ -955,13 +1058,11 @@ class CircuitInspector:
 
     def preocr(self, pil_image):
         """
-        Preprocess image for better OCR accuracy
-        
-        Args:
-            pil_image: PIL Image object
-            
-        Returns:
-            PIL Image: Preprocessed image
+        Preprocess image for better OCR accuracy with contrast and noise reduction.
+        FUNCTIONAL USE: Enhances image quality before OCR to improve text recognition.
+        Converts to grayscale, applies adaptive thresholding, and removes noise.
+        Args: pil_image - PIL Image object
+        Returns: PIL Image - Preprocessed and ready for OCR
         """
         # Convert to numpy array
         img_array = np.array(pil_image)
@@ -988,7 +1089,12 @@ class CircuitInspector:
         return Image.fromarray(denoised)
 
     def errorhighlight(self, annotation):
-        """Handle orange error highlight with OCR-extracted text pre-filled"""
+        """
+        Display categorization menu for orange (error) highlights with OCR-extracted text.
+        FUNCTIONAL USE: Routes orange highlights through error classification workflow.
+        Shows category menu with extracted text pre-filled for punch creation.
+        Args: annotation - Dictionary with highlight data and extracted_text field
+        """
         
         extracted_text = annotation.get('extracted_text', None)
         
@@ -1055,15 +1161,11 @@ class CircuitInspector:
 
     def runtemp(self, template_def, tag_name=None, prefill_text=None):
         """
-        Execute a template definition with OCR text pre-filled
-        
-        Args:
-            template_def: Template configuration
-            tag_name: Tag name (optional)
-            prefill_text: Text extracted from OCR to pre-fill first input
-        
-        Returns:
-            str: Formatted template text
+        Execute a template definition with OCR text pre-filled into first input field.
+        FUNCTIONAL USE: Formats error description using template with values from inputs and OCR.
+        Enables semi-automated punch list generation with user customization.
+        Args: template_def - Template config, tag_name - Category tag, prefill_text - OCR text to pre-fill
+        Returns: str - Formatted template text or None if cancelled
         """
         values = {}
         if tag_name:
@@ -1580,7 +1682,12 @@ class CircuitInspector:
     # ================================================================
 
     def display(self):
-        """Render the current PDF page with all annotations"""
+        """
+        Render current PDF page on canvas with all annotations (highlighters, pen, text).
+        FUNCTIONAL USE: Converts PDF page to image, scales per zoom level, draws all stored annotations.
+        Updates page label and redraws complete view after changes.
+        Render the current PDF page with all annotations
+        """
         if not self.pdf_document:
             self.canvas.delete("all")
             self.page_label.config(text="Page: 0/0")
@@ -1676,6 +1783,11 @@ class CircuitInspector:
     # ================================================================
 
     def savesession(self):
+        """
+        Serialize all current annotations to session JSON file.
+        FUNCTIONAL USE: Writes annotations list, page references, and metadata to file.
+        Enables resuming work across quality module instances without losing annotations.
+        """
         """Save current session to JSON file with all annotation types including highlights"""
         if not self.pdf_document:
             messagebox.showwarning("No PDF", "Load a PDF first before saving a session.")
@@ -1745,6 +1857,11 @@ class CircuitInspector:
     # ================================================================
 
     def loadsession(self):
+        """
+        Load and deserialize annotations from previous session file.
+        FUNCTIONAL USE: Reads saved annotations from last working session on this PDF.
+        Restores in-memory annotation list to resume quality inspection work.
+        """
         """Load session from JSON file via file dialog"""
         path = filedialog.askopenfilename(
             title="Load Session JSON",
@@ -1757,6 +1874,12 @@ class CircuitInspector:
         self.sync_manager_stats_only()
 
     def loadfrompath(self, path):
+        """
+        Deserialize annotations from session JSON file into memory.
+        FUNCTIONAL USE: Reads saved annotations and reconstructs in-memory annotation list.
+        Called when loading cabinet to restore previous quality work.
+        Args: path - Full path to session JSON file
+        """
         """Load session from a specific JSON file path with all annotation types"""
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -1929,6 +2052,11 @@ class CircuitInspector:
         return fitz.Point(rect.x1 + offset, rect.y0)
     
     def exportpdf(self):
+        """
+        Export annotated PDF with all highlighter, pen, and text marks to file.
+        FUNCTIONAL USE: Creates permanent record of quality inspection with visual markup.
+        Saves PDF with all annotations embedded for audit trail and documentation.
+        """
         """Export PDF with all annotations including highlighter strokes"""
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -2087,6 +2215,13 @@ class CircuitInspector:
     # ================================================================
 
     def uisetup(self):
+        """
+        Create complete user interface with toolbar, menu, canvas, and status bar.
+        FUNCTIONAL USE: Builds UI components including file menu, tools menu, navigation buttons,
+        color selectors, zoom controls, highlighter/pen/text tool buttons, canvas for PDF display,
+        and keyboard shortcuts for quality inspection workflow.
+        Sets up all event bindings for mouse and keyboard interactions.
+        """
         """Setup modern UI with highlighter controls"""
         # Main toolbar
         toolbar = tk.Frame(self.root, bg='#1e293b', height=80)
@@ -2408,6 +2543,12 @@ class CircuitInspector:
 
 
     def colorchange(self, color_key):
+        """
+        Switch active highlighter color for quality markup.
+        FUNCTIONAL USE: Changes current highlighter to specified color (yellow/green/orange).
+        Updates button state and readies tool for next annotation with new color.
+        Args: color_key - String key (yellow, green, orange) from highlighter_colors dict
+        """
         """Change the highlighter color"""
         self.current_color_key = color_key
         self.colorbutton()
@@ -2418,6 +2559,11 @@ class CircuitInspector:
 
 
     def togglehighlighter(self):
+        """
+        Toggle highlighter tool on/off.
+        FUNCTIONAL USE: Activates/deactivates highlighter mode for PDF markup.
+        Updates UI state and sets drawing_type to 'highlight'.
+        """
         """Toggle highlighter on/off"""
         if self.active_highlighter:
             self.active_highlighter = None
@@ -2434,6 +2580,12 @@ class CircuitInspector:
                 self.text_btn.config(bg='#334155', relief=tk.FLAT)
 
     def toolmode(self, mode):
+        """
+        Switch active drawing tool mode.
+        FUNCTIONAL USE: Sets tool_mode to 'pen' for freehand drawing or 'text' for text annotations.
+        Used by toolbar buttons to activate different annotation tools.
+        Args: mode - String ('pen', 'text') or None to deactivate
+        """
         """Set tool mode (pen or text)"""
         if self.active_highlighter:
             self.togglehighlighter()
@@ -2454,6 +2606,11 @@ class CircuitInspector:
                 self.pen_btn.config(bg='#334155', relief=tk.FLAT)
 
     def deactivate(self):
+        """
+        Disable all active drawing tools.
+        FUNCTIONAL USE: Clears tool mode, stops active drawing, resets canvas state.
+        Bound to Escape key for quick tool deactivation.
+        """
         """Deactivate all tools and highlighters"""
         if self.active_highlighter:
             self.togglehighlighter()
@@ -2466,6 +2623,12 @@ class CircuitInspector:
         pass
 
     def flashstat(self, message, bg='#10b981'):
+        """
+        Display temporary status message in status bar with color indication.
+        FUNCTIONAL USE: Provides visual feedback for user actions (success, warning, info).
+        Message auto-clears after timeout.
+        Args: message - Text to display, bg - background color (green for success, orange for warning)
+        """
         """Show a temporary status message"""
         status_label = tk.Label(
             self.root, 
@@ -2485,6 +2648,12 @@ class CircuitInspector:
     # ================================================================
 
     def addtostack(self, action_type, annotation):
+        """
+        Push annotation action onto undo stack for later reversal.
+        FUNCTIONAL USE: Maintains undo history limited to 50 most recent actions.
+        Allows user to revert mistakes with Ctrl+Z during quality inspection.
+        Args: action_type - String ('add_annotation', 'delete'), annotation - Annotation data
+        """
         """Add an action to the undo stack"""
         self.undo_stack.append({
             'type': action_type,
@@ -2495,6 +2664,11 @@ class CircuitInspector:
             self.undo_stack.pop(0)
 
     def undolast(self):
+        """
+        Reverse most recent annotation change from undo stack.
+        FUNCTIONAL USE: Removes last action and redraws canvas to show previous state.
+        Bound to Ctrl+Z for quick access during quality inspection.
+        """
         """Undo the last annotation action"""
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
@@ -2516,21 +2690,41 @@ class CircuitInspector:
     # ================================================================
 
     def prev(self):
+        """
+        Navigate to previous page in PDF.
+        FUNCTIONAL USE: Decrements current_page and redraws display.
+        Bound to arrow button in toolbar during quality inspection.
+        """
         if self.pdf_document and self.current_page > 0:
             self.current_page -= 1
             self.display()
 
     def next(self):
+        """
+        Navigate to next page in PDF.
+        FUNCTIONAL USE: Increments current_page and redraws display.
+        Bound to arrow button in toolbar during quality inspection.
+        """
         if self.pdf_document and self.current_page < len(self.pdf_document) - 1:
             self.current_page += 1
             self.display()
 
     def zoomin(self):
+        """
+        Increase zoom level for detail inspection.
+        FUNCTIONAL USE: Multiplies zoom_level by 1.2 for magnified PDF view.
+        Bound to zoom button and Ctrl++ shortcut for detailed quality inspection.
+        """
         if self.zoom_level < 3.0:
             self.zoom_level += 0.25
             self.display()
 
     def zoomout(self):
+        """
+        Decrease zoom level for broader view.
+        FUNCTIONAL USE: Divides zoom_level by 1.2 for zoomed-out PDF view.
+        Bound to zoom button and Ctrl+- shortcut for comprehensive page view.
+        """
         if self.zoom_level > 0.5:
             self.zoom_level -= 0.25
             self.display()
@@ -2626,6 +2820,11 @@ class CircuitInspector:
             self.categories = []
 
     def getnextsr(self):
+        """
+        Calculate next available punch serial number from Excel Punch Sheet.
+        FUNCTIONAL USE: Scans rows 9+ to find highest SR No, returns next sequential number.
+        Used when creating new punch entries during quality inspection.
+        """
         """Get next serial number"""
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):

@@ -28,7 +28,12 @@ print(f"✓ Production Tool started by: {Name} (username: {User})")
 
 
 def getbase():
-    """Returns the directory where the app is running from"""
+    """
+    Returns the base directory path where the application is running.
+    FUNCTIONAL USE: Determines if app is frozen (compiled) or running from source code.
+    Used to construct absolute paths for config files, databases, and resources.
+    Returns: Directory path string (either compiled executable dir or script dir)
+    """
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +47,12 @@ class ManagerDB:
         self.initializedatabase()
     
     def initializedatabase(self):
-        """Initialize tables if they don't exist"""
+        """
+        Create database schema with cabinets and category_occurrences tables.
+        FUNCTIONAL USE: Initializes persistent storage for cabinet metadata, punch statistics,
+        and status tracking. Adds missing columns to existing tables if needed.
+        Schema includes: cabinet_id, project info, punch counts, status, dates, storage location, excel_path
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -89,7 +99,12 @@ class ManagerDB:
     def updcab(self, cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
                       total_punches, open_punches, implemented_punches, closed_punches, status,
                       storage_location=None, excel_path=None):
-        """Update cabinet statistics WITH excel_path and storage_location"""
+        """
+        Insert or replace complete cabinet record with all statistics and metadata.
+        FUNCTIONAL USE: Updates manager dashboard with cabinet progress: punch counts, implementation status,
+        storage location, and associated Excel file path. Creates record if new, updates if exists.
+        Used by production module to sync work progress with quality management system.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -119,7 +134,11 @@ class ManagerDB:
             return False
     
     def updstats(self, cabinet_id, status):
-        """Update cabinet status only"""
+        """
+        Update cabinet status field and last_updated timestamp.
+        FUNCTIONAL USE: Lightweight status-only update for handover transitions between quality/production.
+        Updates database with current date/time to track workflow progress.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -249,7 +268,12 @@ class ProductionTool:
     # ================================================================
     
     def syncmgrstats(self):
-        """Sync current cabinet statistics to manager database"""
+        """
+        Calculate current punch statistics from Excel and sync to manager database.
+        FUNCTIONAL USE: Counts open/implemented/closed punches from Excel Punch Sheet (rows 9+).
+        Syncs cabinet status and statistics to manager.db for dashboard visibility.
+        Called during production work to update manager on progress.
+        """
         if not self.cabinet_id:
             return
         
@@ -323,6 +347,12 @@ class ProductionTool:
     # ================================================================
     
     def split_cell(self, cell_ref):
+        """
+        Parse Excel cell reference (e.g., 'A1', 'B42') into row and column components.
+        FUNCTIONAL USE: Splits Excel notation into numeric row and string column for openpyxl operations.
+        Args: cell_ref - Cell reference string (e.g., 'B5', 'H10')
+        Returns: Tuple of (row_number, column_letter)
+        """
         m = re.match(r"([A-Z]+)(\d+)", cell_ref)
         if not m:
             raise ValueError(f"Invalid cell reference: {cell_ref}")
@@ -330,12 +360,25 @@ class ProductionTool:
         return int(row), col
     
     def _resolve_merged_target(self, ws, row, col_idx):
+        """
+        Find actual cell coordinates when target cell is part of a merged cell range.
+        FUNCTIONAL USE: Handles merged cells in Excel by returning the top-left cell of merge range.
+        Ensures writes/reads go to correct cell even when targeting merged area.
+        Args: ws - Worksheet, row - row number, col_idx - column index
+        Returns: Tuple of (actual_row, actual_col) accounting for merges
+        """
         for merged in ws.merged_cells.ranges:
             if merged.min_row <= row <= merged.max_row and merged.min_col <= col_idx <= merged.max_col:
                 return merged.min_row, merged.min_col
         return row, col_idx
     
     def write_cell(self, ws, row, col, value):
+        """
+        Write value to Excel cell, handling merged cells and column format conversion.
+        FUNCTIONAL USE: Unified write interface that accepts column as letter ('A') or number (1).
+        Automatically routes to correct cell if target is part of merged range.
+        Args: ws - Worksheet, row - row number, col - column (letter or index), value - data to write
+        """
         if isinstance(col, str):
             col_idx = column_index_from_string(col)
         else:
@@ -344,6 +387,13 @@ class ProductionTool:
         ws.cell(row=target_row, column=target_col).value = value
     
     def read_cell(self, ws, row, col):
+        """
+        Read value from Excel cell, handling merged cells and column format conversion.
+        FUNCTIONAL USE: Unified read interface that accepts column as letter ('A') or number (1).
+        Automatically finds actual cell if target is part of merged range.
+        Args: ws - Worksheet, row - row number, col - column (letter or index)
+        Returns: Cell value (string, number, date, etc.)
+        """
         if isinstance(col, str):
             col_idx = column_index_from_string(col)
         else:
@@ -356,7 +406,12 @@ class ProductionTool:
     # ================================================================
     
     def uisetup(self):
-        """Setup modern professional UI with highlighter mode"""
+        """
+        Create complete user interface with toolbar, menu, canvas, and status bar.
+        FUNCTIONAL USE: Builds UI components including file menu, tools menu, navigation buttons,
+        zoom controls, pen/text tool buttons, canvas for PDF display, and keyboard shortcuts.
+        Sets up all event bindings for mouse and keyboard interactions.
+        """
         # Main toolbar
         toolbar = tk.Frame(self.root, bg='#1e293b', height=70)
         toolbar.pack(side=tk.TOP, fill=tk.X)
@@ -562,7 +617,11 @@ class ProductionTool:
     # ================================================================
     
     def loadfrmhandover(self):
-        """Load item from production handover queue"""
+        """
+        Display dialog of pending production items and load selected cabinet.
+        FUNCTIONAL USE: Retrieves quality-inspected items from handover queue, presents list UI,
+        loads selected PDF and Excel into production workspace. Auto-opens production mode.
+        """
         pending_items = self.handover_db.get_pending_production_items()
         
         if not pending_items:
@@ -655,7 +714,12 @@ class ProductionTool:
         listbox.bind('<Double-Button-1>', lambda e: load_selected())
     
     def loadhndovritm(self, item):
-        """Load a handover item - WITH AUTO-OPEN PRODUCTION MODE"""
+        """
+        Load PDF, Excel, and session data for a quality-handover item into production workspace.
+        FUNCTIONAL USE: Initializes ProductionTool workspace with cabinet info, loads PDF document,
+        Excel punch sheet, and previous session annotations. Auto-opens production mode dialog.
+        Args: item - Dictionary with cabinet_id, pdf_path, excel_path, storage_location, project info
+        """
         try:
             # Verify files exist
             if not os.path.exists(item['pdf_path']):
@@ -744,7 +808,11 @@ class ProductionTool:
             import traceback
             traceback.print_exc()
     def closing(self):
-        """Handle application closing with auto-save"""
+        """
+        Save current session and close application gracefully.
+        FUNCTIONAL USE: Auto-saves all annotations and work to session file before exit.
+        Ensures no unsaved production work is lost.
+        """
         if self.pdf_document and hasattr(self, 'project_dirs'):
             try:
                 print("\n🔄 Auto-saving before closing...")
@@ -773,7 +841,12 @@ class ProductionTool:
     # ================================================================
     
     def compreworkhndbck(self):
-        """Complete rework and handback to Quality"""
+        """
+        Finalize production work and return cabinet to quality for verification.
+        FUNCTIONAL USE: Validates all punches have implementation status, auto-saves session,
+        creates handback record in database for quality module to receive and review.
+        Updates manager database with completion status.
+        """
         if not self.pdf_document or not self.excel_file:
             messagebox.showwarning("No Item Loaded", 
                                  "Please load an item from the production queue first.")
@@ -843,7 +916,11 @@ class ProductionTool:
             messagebox.showerror("Error", "Failed to handback item to Quality.")
     
     def findnotimplemented(self):
-        """Get list of punches without 'Implemented By'"""
+        """
+        Scan Excel Punch Sheet and identify punches lacking implementation.
+        FUNCTIONAL USE: Checks 'Implemented By' column for each punch from row 9 onwards.
+        Returns list of unimplemented punches to prevent premature handback to quality.
+        """
         not_implemented = []
         
         try:
@@ -894,7 +971,12 @@ class ProductionTool:
             return []
     
     def shownotimplemented(self, not_implemented):
-        """Show dialog listing punches without implementation"""
+        """
+        Display warning dialog with list of punches needing implementation.
+        FUNCTIONAL USE: Visual feedback preventing handback with incomplete work.
+        Shows punch details and requires user acknowledgment.
+        Args: not_implemented - List of punch records with incomplete implementation
+        """
         dlg = tk.Toplevel(self.root)
         dlg.title("⚠️ Implementation Required")
         dlg.geometry("800x600")
@@ -955,7 +1037,12 @@ class ProductionTool:
     # ================================================================
     
     def prodmode(self):
-        """Production mode with highlighter navigation"""
+        """
+        Launch modal dialog for punch navigation and implementation in production workflow.
+        FUNCTIONAL USE: Displays list of open punches sorted by implementation status.
+        Allows marking punches as implemented with name/date tracking. Navigates PDF to
+        corresponding annotations for each punch item.
+        """
         if not self.pdf_document or not self.excel_file:
             messagebox.showwarning("No Item", 
                                  "Please load an item from the production queue first.")
@@ -1346,6 +1433,11 @@ class ProductionTool:
         self.production_highlight_tags.clear()
     
     def openpunches(self):
+        """
+        Extract list of open (non-closed) punches from Excel Punch Sheet.
+        FUNCTIONAL USE: Reads from row 9 onwards, identifies punches without 'Closed By' entry.
+        Returns punch details for production mode navigation and implementation tracking.
+        """
         """Read open punches from Excel - row 9 onwards"""
         punches = []
         
@@ -1393,6 +1485,12 @@ class ProductionTool:
     # ================================================================
     
     def settlmd(self, mode):
+        """
+        Activate tool mode: pen for freehand drawing or text for text annotations.
+        FUNCTIONAL USE: Sets current drawing tool (None, 'pen', 'text') for annotation workflow.
+        Updates UI button states to reflect active tool.
+        Args: mode - String ('pen' or 'text') or None to deactivate
+        """
         """Set tool mode (pen or text)"""
         # Deactivate highlighter if active (not applicable in production tool, but kept for consistency)
         if hasattr(self, 'active_highlighter') and self.active_highlighter:
@@ -1417,6 +1515,11 @@ class ProductionTool:
         print(f"Tool mode: {self.tool_mode}")
     
     def deactivate_all(self):
+        """
+        Disable all active drawing tools and highlighter.
+        FUNCTIONAL USE: Clears tool mode, stops active highlighting/drawing, resets canvas.
+        Bound to Escape key for quick tool deactivation.
+        """
         """Deactivate all tools"""
         if self.tool_mode:
             self.settlmd(self.tool_mode)
@@ -1432,6 +1535,12 @@ class ProductionTool:
         pass
     
     def _flash_status(self, message, bg='#10b981'):
+        """
+        Display temporary status message in status bar with color indication.
+        FUNCTIONAL USE: Provides visual feedback for user actions (success, warning, info).
+        Message auto-clears after timeout.
+        Args: message - Text to display, bg - background color (green for success, orange for warning)
+        """
         """Show a temporary status message"""
         status_label = tk.Label(
             self.root, 
@@ -1447,6 +1556,10 @@ class ProductionTool:
         self.root.after(1500, lambda: status_label.destroy())
     
     def clear_temp_drawings(self):
+        """
+        Delete temporary preview drawings from canvas.
+        FUNCTIONAL USE: Clears incomplete pen strokes and text previews when user cancels or switches tools.
+        """
         """Clear temporary drawing elements from canvas"""
         for line_id in self.temp_line_ids:
             try:
@@ -1460,6 +1573,12 @@ class ProductionTool:
     # ================================================================
     
     def addtoundostck(self, action_type, annotation):
+        """
+        Push annotation action onto undo stack for later reversal.
+        FUNCTIONAL USE: Maintains undo history limited to 50 most recent actions.
+        Allows user to revert mistakes with Ctrl+Z.
+        Args: action_type - String ('add', 'delete', 'modify'), annotation - Annotation data
+        """
         """Add an action to the undo stack"""
         self.undo_stack.append({
             'type': action_type,
@@ -1470,6 +1589,11 @@ class ProductionTool:
             self.undo_stack.pop(0)
     
     def undolast(self):
+        """
+        Reverse most recent annotation change from undo stack.
+        FUNCTIONAL USE: Removes last action and redraws canvas to show previous state.
+        Bound to Ctrl+Z for quick access.
+        """
         """Undo the last annotation action"""
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
@@ -1491,6 +1615,12 @@ class ProductionTool:
     # ================================================================
     
     def leftclick(self, event):
+        """
+        Handle mouse down event for pen/text drawing and annotation interactions.
+        FUNCTIONAL USE: Initiates pen stroke, text entry, or annotation selection.
+        Routes to appropriate handler based on active tool mode.
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         """Handle left mouse button press"""
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -1516,6 +1646,12 @@ class ProductionTool:
             return
     
     def leftdrag(self, event):
+        """
+        Handle mouse movement during button press for continuous drawing.
+        FUNCTIONAL USE: Extends pen stroke with new points, updates temporary preview on canvas.
+        Called repeatedly during drag motion to render real-time feedback.
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         """Handle left mouse button drag"""
         if not self.drawing:
             return
@@ -1537,6 +1673,12 @@ class ProductionTool:
             return
     
     def leftrls(self, event):
+        """
+        Handle mouse up event to finalize drawing/annotation.
+        FUNCTIONAL USE: Completes pen stroke, saves annotation to session, updates undo stack.
+        Converts temporary preview drawing into persistent annotation.
+        Args: event - Tkinter mouse event with x, y coordinates
+        """
         """Handle left mouse button release"""
         if not self.pdf_document or not self.drawing:
             return
@@ -1588,6 +1730,11 @@ class ProductionTool:
     # ================================================================
     
     def display(self):
+        """
+        Render current PDF page on canvas with all annotations (highlighters, pen, text).
+        FUNCTIONAL USE: Converts PDF page to image, scales per zoom level, draws all stored annotations.
+        Updates page label and redraws complete view after changes.
+        """
         """Render the current PDF page with HIGHLIGHTER annotations ONLY - NO BOXES"""
         if not self.pdf_document:
             self.canvas.delete("all")
@@ -1724,6 +1871,11 @@ class ProductionTool:
     # ================================================================
     
     def getnextsr(self):
+        """
+        Calculate next available punch serial number from Excel Punch Sheet.
+        FUNCTIONAL USE: Scans rows 9+ to find highest SR No, returns next sequential number.
+        Used when creating new punch entries.
+        """
         try:
             if not self.excel_file or not os.path.exists(self.excel_file):
                 return 1
@@ -1750,9 +1902,21 @@ class ProductionTool:
             return 1
     
     def page_to_display_scale(self):
+        """
+        Calculate scaling factor from PDF page coordinates to display canvas.
+        FUNCTIONAL USE: Accounts for zoom level (default 2x magnification plus user zoom).
+        Used to convert between PDF space and canvas rendering space.
+        """
         return 2.0 * self.zoom_level
     
     def display_to_page_coords(self, pts):
+        """
+        Convert canvas display coordinates back to PDF page space.
+        FUNCTIONAL USE: Reverses scaling from display_scale to find annotation position in PDF.
+        Handles single point tuple or list of points.
+        Args: pts - Single (x, y) tuple or list of [(x1, y1), (x2, y2), ...]
+        Returns: Same structure but with page-space coordinates
+        """
         """Convert display-space coordinates to page-space coordinates."""
         scale = self.page_to_display_scale()
         
@@ -1765,6 +1929,13 @@ class ProductionTool:
         return [(x / scale, y / scale) for x, y in pts]
     
     def page_to_display_coords(self, pts):
+        """
+        Convert PDF page coordinates to canvas display space.
+        FUNCTIONAL USE: Scales from PDF space to display space for rendering annotations on canvas.
+        Handles single point tuple or list of points.
+        Args: pts - Single (x, y) tuple or list of [(x1, y1), (x2, y2), ...]
+        Returns: Same structure but with display-space coordinates
+        """
         """Convert page coords to display coords"""
         scale = self.page_to_display_scale()
         
@@ -1777,11 +1948,23 @@ class ProductionTool:
         return [(x * scale, y * scale) for x, y in pts]
     
     def bbox_page_to_display(self, bbox_page):
+        """
+        Convert bounding box from PDF coordinates to display coordinates.
+        FUNCTIONAL USE: Scales rectangle coordinates for rendering on canvas.
+        Args: bbox_page - Tuple (x1, y1, x2, y2) in PDF space
+        Returns: Tuple (x1, y1, x2, y2) in display space
+        """
         scale = self.page_to_display_scale()
         x1, y1, x2, y2 = bbox_page
         return (x1 * scale, y1 * scale, x2 * scale, y2 * scale)
     
     def bbox_display_to_page(self, bbox_display):
+        """
+        Convert bounding box from display coordinates to PDF coordinates.
+        FUNCTIONAL USE: Reverses scaling to find annotation position in original PDF.
+        Args: bbox_display - Tuple (x1, y1, x2, y2) in display space
+        Returns: Tuple (x1, y1, x2, y2) in PDF space
+        """
         scale = self.page_to_display_scale()
         x1, y1, x2, y2 = bbox_display
         return (x1 / scale, y1 / scale, x2 / scale, y2 / scale)
@@ -1791,6 +1974,13 @@ class ProductionTool:
     # ================================================================
     
     def transform_bbox_for_rotation(self, rect, page):
+        """
+        Adjust annotation bbox when PDF page has rotation metadata.
+        FUNCTIONAL USE: Handles PDFs with /Rotate property by transforming coordinates accordingly.
+        Ensures annotations align correctly on rotated pages.
+        Args: rect - Bounding box (x1, y1, x2, y2), page - PyMuPDF page object
+        Returns: Transformed bounding box adjusted for page rotation
+        """
         """Transform bbox for page rotation (for rectangle annotations)"""
         r = page.rotation
         w = page.rect.width
@@ -1809,6 +1999,13 @@ class ProductionTool:
         return fitz.Rect(x1, y1, x2, y2)
 
     def transform_point_for_rotation(self, point, page):
+        """
+        Adjust single point coordinates when PDF page has rotation metadata.
+        FUNCTIONAL USE: Handles /Rotate metadata on rotated PDF pages.
+        Ensures text annotations and marks position correctly.
+        Args: point - (x, y) coordinate, page - PyMuPDF page object
+        Returns: Transformed (x, y) adjusted for page rotation
+        """
         """Transform a single point (x, y) for page rotation
         
         Used for:
@@ -1832,6 +2029,13 @@ class ProductionTool:
         return fitz.Point(x, y)
 
     def transform_highlight_points_for_rotation(self, points, page):
+        """
+        Adjust list of points for highlighter stroke when page has rotation.
+        FUNCTIONAL USE: Handles /Rotate metadata for multi-point annotations like pen strokes.
+        Transforms entire stroke to align with rotated page.
+        Args: points - List of (x, y) tuples, page - PyMuPDF page object
+        Returns: List of transformed (x, y) tuples
+        """
         """Transform highlighter stroke points for page rotation
         
         Highlighters store a list of (x, y) tuples representing the stroke path.
@@ -1867,6 +2071,12 @@ class ProductionTool:
         return transformed_points
     
     def zoomin(self, canvas_x, canvas_y, zoom_delta):
+        """
+        Increase zoom level centered on canvas point.
+        FUNCTIONAL USE: Magnifies PDF for detail work while keeping target point centered.
+        Redraws display after zoom change.
+        Args: canvas_x, canvas_y - Center point for zoom, zoom_delta - Multiplier (e.g., 1.2)
+        """
         if not self.pdf_document:
             return
         
@@ -1888,6 +2098,11 @@ class ProductionTool:
         self.canvas.yview_moveto((canvas_y * scale) / max(1, bbox[3]))
     
     def doubleclick(self, event):
+        """
+        Handle double-click on canvas to activate text entry at location.
+        FUNCTIONAL USE: Positions text tool cursor for annotation text input.
+        Args: event - Tkinter mouse event
+        """
         self.drawing = False
         self.temp_highlight_id = None
         x = self.canvas.canvasx(event.x)
@@ -1895,6 +2110,11 @@ class ProductionTool:
         self.zoomin(x, y, +0.25)
     
     def doubleright(self, event):
+        """
+        Handle double right-click on canvas for context menu.
+        FUNCTIONAL USE: Currently placeholder for future context menu functionality.
+        Args: event - Tkinter mouse event
+        """
         self.drawing = False
         self.temp_highlight_id = None
         x = self.canvas.canvasx(event.x)
@@ -1902,21 +2122,41 @@ class ProductionTool:
         self.zoomin(x, y, -0.25)
     
     def prev(self):
+        """
+        Navigate to previous page in PDF.
+        FUNCTIONAL USE: Decrements current_page and redraws display.
+        Bound to arrow button in toolbar.
+        """
         if self.pdf_document and self.current_page > 0:
             self.current_page -= 1
             self.display()
     
     def next(self):
+        """
+        Navigate to next page in PDF.
+        FUNCTIONAL USE: Increments current_page and redraws display.
+        Bound to arrow button in toolbar.
+        """
         if self.pdf_document and self.current_page < len(self.pdf_document) - 1:
             self.current_page += 1
             self.display()
     
     def zoom(self):
+        """
+        Increase zoom level and redraw.
+        FUNCTIONAL USE: Multiplies zoom_level by 1.2 for magnified view.
+        Bound to zoom button and Ctrl++ shortcut.
+        """
         if self.zoom_level < 3.0:
             self.zoom_level += 0.25
             self.display()
     
     def zoomout(self):
+        """
+        Decrease zoom level and redraw.
+        FUNCTIONAL USE: Divides zoom_level by 1.2 for zoomed-out view.
+        Bound to zoom button and Ctrl+- shortcut.
+        """
         if self.zoom_level > 0.5:
             self.zoom_level -= 0.25
             self.display()
@@ -1926,6 +2166,11 @@ class ProductionTool:
     # ================================================================
     
     def getsesspathforpdf(self):
+        """
+        Generate session file path for current PDF.
+        FUNCTIONAL USE: Creates .json path in cabinet session directory for storing annotations.
+        Used for saving/loading work between sessions.
+        """
         """Get session path for current PDF"""
         if not self.current_pdf_path or not self.cabinet_id:
             return None
@@ -1950,6 +2195,11 @@ class ProductionTool:
         return None
     
     def savesess(self):
+        """
+        Serialize all current annotations to session JSON file.
+        FUNCTIONAL USE: Writes annotations list, page references, and metadata to file.
+        Enables resuming work across production module instances.
+        """
         """Save current session to JSON file with all annotation types"""
         if not self.pdf_document:
             print("⚠️ No PDF loaded - cannot save session")
