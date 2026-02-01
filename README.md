@@ -243,7 +243,7 @@ def route_to_role(username, full_name, role):
 - **Major Methods:**
 
 ```python
-def load_pdf():
+def loadpdf():
     """Open and load a PDF file for inspection
     tries to read project details from the drawings
     as a fallback-> Prompts user for project details,
@@ -256,7 +256,7 @@ def load_pdf():
 
     """
 
-def display_page():
+def display():
     """Render current PDF page with all annotations
     
     Handles:
@@ -267,7 +267,7 @@ def display_page():
     - Coordinate transformation for zoom and scroll
     """
 
-def extract_text_from_highlight_area(annotation):
+def exctracttxt(annotation):
     """Extract text from highlighted region using OCR
     
     Args:
@@ -284,7 +284,7 @@ def extract_text_from_highlight_area(annotation):
     5. Validate text is all capitals
     """
 
-def on_left_press(event):
+def leftclick(event):
     """Handle mouse button down events
     
     Initiates annotation based on active tool:
@@ -293,14 +293,14 @@ def on_left_press(event):
     - Text: Record position for text annotation
     """
 
-def on_left_drag(event):
+def leftdrag(event):
     """Handle mouse movement while button held
     
     For highlighter and pen tools, draws visual feedback line
     and accumulates points for the stroke.
     """
 
-def on_left_release_with_ocr(event):
+def leftrel(event):
     """Complete annotation after mouse button release
     
     For highlighter (orange only):
@@ -313,7 +313,7 @@ def on_left_release_with_ocr(event):
     - Triggers display refresh
     """
 
-def save_session():
+def savesession():
     """Save all annotations to JSON file
     
     Serializes annotations with coordinate conversion:
@@ -323,14 +323,14 @@ def save_session():
     - Metadata (sr_no, ref_no, category, etc.)
     """
 
-def load_session_from_path(path):
+def loadfrompath(path):
     """Load previously saved annotation session
     
     Deserializes JSON and reconstructs all annotations,
     maintaining proper coordinate format and metadata.
     """
 
-def export_annotated_pdf():
+def exportpdf():
     """Create annotated PDF with all marks
     
     Adds to PDF:
@@ -340,14 +340,14 @@ def export_annotated_pdf():
     - SR numbers for closed punches
     """
 
-def review_checklist_now():
+def reviewnow():
     """Open Interphase checklist review dialog
     
     Displays items needing status (OK/NOK/N/A),
     allows user to mark progress and add remarks.
     """
 
-def punch_closing_mode():
+def punchclosing():
     """Interactive mode for closing logged defects
     
     Workflow:
@@ -358,7 +358,7 @@ def punch_closing_mode():
     5. Convert orange highlight to green
     """
 
-def handover_to_production():
+def handover():
     """Hand cabinet to production for rework
     
     Validates:
@@ -368,7 +368,7 @@ def handover_to_production():
     - Updates cabinet status
     """
 
-def auto_finalize_if_complete():
+def autofin():
     """Automatically finalize cabinet when all work complete
     
     Conditions checked:
@@ -450,7 +450,7 @@ Reads and writes to Punch Sheet:
 **Key Methods:**
 
 ```python
-def load_from_handover_queue():
+def loadfrmhandover():
     """Display list of items handed to production
     
     Shows:
@@ -460,7 +460,7 @@ def load_from_handover_queue():
     - Allows selection to load item
     """
 
-def load_handover_item(item):
+def loadhndovritm(item):
     """Load a handover item and auto-open production mode
     
     Process:
@@ -470,7 +470,7 @@ def load_handover_item(item):
     4. Auto-open production mode dialog
     """
 
-def production_mode():
+def prodmode():
     """Interactive mode for reviewing and completing punches
     
     Workflow:
@@ -482,7 +482,7 @@ def production_mode():
     6. Move to next punch
     """
 
-def complete_rework_handback():
+def compreworkhndbck():
     """Finalize rework and hand back to quality
     
     Validates:
@@ -492,7 +492,7 @@ def complete_rework_handback():
     - Status updated to "being_closed_by_quality"
     """
 
-def navigate_to_punch_highlighter(sr_no, punch_text):
+def navtopunch(sr_no, punch_text):
     """Highlight annotation location on current page
     
     Displays:
@@ -501,7 +501,7 @@ def navigate_to_punch_highlighter(sr_no, punch_text):
     - SR number label
     """
 
-def sync_manager_stats():
+def syncmgrstats():
     """Update manager dashboard with current punch counts"""
 ```
 
@@ -551,17 +551,17 @@ Load from Handover Queue
 **Key Methods:**
 
 ```python
-def init_database():
+def initializedb():
     """Initialize manager.db with cabinet and category tables"""
 
-def count_punches_from_excel(excel_path):
+def punchcount(excel_path):
     """Count punch statistics directly from Excel file
     
     Returns:
         tuple: (total_punches, implemented_punches, closed_punches)
     """
 
-def get_status_from_interphase(excel_path):
+def getstatsfrominterphase(excel_path):
     """Determine cabinet status from Interphase worksheet
     
     Reads Interphase column D (Status) for each reference number,
@@ -576,21 +576,21 @@ def get_status_from_interphase(excel_path):
         str: Status string or None
     """
 
-def get_all_projects():
+def getallproj():
     """Retrieve all projects with cabinet counts
     
     Returns:
         list: Project dictionaries with last_updated timestamps
     """
 
-def get_cabinets_by_project(project_name):
+def getcabinets(project_name):
     """Get all cabinets in a project with real-time statistics
     
     Returns:
         list: Cabinet data with punch counts and status
     """
 
-def get_category_stats(start_date=None, end_date=None, project_name=None):
+def getcatstats(start_date=None, end_date=None, project_name=None):
     """Retrieve defect category statistics with date and project filtering
     
     Args:
@@ -609,7 +609,7 @@ def get_category_stats(start_date=None, end_date=None, project_name=None):
 **Key Methods:**
 
 ```python
-def show_dashboard():
+def dashboard():
     """Display project overview with statistics cards
     
     Shows:
@@ -620,7 +620,7 @@ def show_dashboard():
     - Project list with expandable cabinet details
     """
 
-def show_analytics():
+def analytics():
     """Display Pareto chart with category analysis
     
     Features:
@@ -632,7 +632,7 @@ def show_analytics():
     - Export to Excel
     """
 
-def show_defect_library():
+def showdfctlib():
     """Display and manage defect category definitions
     
     Allows:
@@ -643,7 +643,7 @@ def show_defect_library():
     - View special subcategories
     """
 
-def show_template_editor():
+def templatexcleditor():
     """Interface for managing master Excel template
     
     Operations:
@@ -653,7 +653,7 @@ def show_template_editor():
     - Verify template structure
     """
 
-def export_excel_filtered():
+def exportxcl():
     """Export analytics as formatted Excel file
     
     Generates workbooks with:
@@ -1044,42 +1044,42 @@ def route_to_role(username: str, full_name: str, role: str) -> None
 #### PDF and Annotation
 
 ```python
-def display_page() -> None
+def display() -> None
     """Render current page with all annotations"""
 
-def save_session() -> None
+def savesession() -> None
     """Serialize annotations to JSON file"""
 
-def load_session_from_path(path: str) -> None
+def loadfrompath(path: str) -> None
     """Deserialize annotations from JSON file"""
 
-def export_annotated_pdf() -> None
+def exportpdf() -> None
     """Create PDF with all annotations embedded"""
 ```
 
 #### Excel Operations
 
 ```python
-def read_cell(ws: Worksheet, row: int, col: str) -> Any
+def readcell(ws: Worksheet, row: int, col: str) -> Any
     """Read cell value handling merged cells"""
 
-def write_cell(ws: Worksheet, row: int, col: str, value: Any) -> None
+def writecell(ws: Worksheet, row: int, col: str, value: Any) -> None
     """Write cell value handling merged cells"""
 
-def get_next_sr_no() -> int
+def getnextsr() -> int
     """Get next serial number for punch"""
 ```
 
 #### OCR and Extraction
 
 ```python
-def extract_text_from_highlight_area(annotation: dict) -> str
+def exctracttxt(annotation: dict) -> str
     """Extract text from highlight using OCR"""
 
-def extract_text_from_pdf_page(pdf_path: str, page_number: int) -> str
+def extracttext(pdf_path: str, page_number: int) -> str
     """Extract all text from PDF page using OCR"""
 
-def clean_ocr_text(text: str) -> str
+def cleantxt(text: str) -> str
     """Clean and validate OCR output"""
 ```
 
