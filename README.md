@@ -1078,9 +1078,6 @@ def exctracttxt(annotation: dict) -> str
 
 def extracttext(pdf_path: str, page_number: int) -> str
     """Extract all text from PDF page using OCR"""
-
-def cleantxt(text: str) -> str
-    """Clean and validate OCR output"""
 ```
 
 #### Database Operations
