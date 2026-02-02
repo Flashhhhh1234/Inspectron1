@@ -35,7 +35,7 @@ path = r"C:\Users\E1547548\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 if os.path.exists(path):
     pytesseract.pytesseract.tesseract_cmd = path
     
-def base():
+def app_base():
     """
     Returns the directory where the app is running from.
     FUNCTIONAL USE: Determines if app is frozen (compiled) or running from source code.
@@ -365,7 +365,7 @@ class CircuitInspector:
         self.sales_order_no = ""
         self.cabinet_id = ""
         self.annotations = []
-        base = base()
+        base = app_base()
         self.master_excel_file = os.path.join(base, "Emerson.xlsx")
 
         self.excel_file = None
@@ -418,7 +418,7 @@ class CircuitInspector:
         }
 
         self.categories = []
-        self.category_file = os.path.join(os.path.dirname(base()), "assets", "categories.json")
+        self.category_file = os.path.join(os.path.dirname(app_base()), "assets", "categories.json")
         self.loadcat()
 
         # HIGHLIGHTER STATE - 3 COLORS
@@ -443,7 +443,7 @@ class CircuitInspector:
         self.uisetup()
         self.current_sr_no = self.getnextsr()
         
-        base = base()
+        base = app_base()
         db_path = os.path.join(base, "inspection_tool.db")
         self.db = DatabaseManager(db_path)
         manager_db_path = os.path.join(base, "manager.db")
@@ -587,6 +587,7 @@ class CircuitInspector:
         FUNCTIONAL USE: Extends pen/highlighter stroke with new points, updates temporary preview on canvas.
         Called repeatedly during drag motion to render real-time feedback.
         Args: event - Tkinter mouse event with x, y coordinates
+        
         """
         if not self.drawing:
             return
@@ -2387,7 +2388,7 @@ class CircuitInspector:
         
         # Load icons or use fallback
         try:
-            assets_dir = os.path.join(os.path.dirname(base()), "assets")
+            assets_dir = os.path.join(os.path.dirname(app_base()), "assets")
             icon_size = (44, 44)
             
             pen_icon_path = os.path.join(assets_dir, "pen_icon.png")
