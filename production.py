@@ -15,7 +15,7 @@ import sys
 import json
 import getpass
 import re
-import sqlite3
+import pg_sqlite_compat as sqlite3
 import numpy as np
 from handover_database import HandoverDB
 from database_manager import DatabaseManager
@@ -178,10 +178,9 @@ class ProductionTool:
         self.storage_location = ""
         self.annotations = []
         
-        base = getbase()
-        self.handover_db = HandoverDB(os.path.join(base, "handover_db.json"))
-        self.db = DatabaseManager(os.path.join(base, "inspection_tool.db"))
-        self.manager_db = ManagerDB(os.path.join(base, "manager.db"))
+        self.handover_db = HandoverDB("handover_db")
+        self.db = DatabaseManager("inspection_tool")
+        self.manager_db = ManagerDB("manager")
         
         self.excel_file = None
         self.working_excel_path = None
@@ -271,7 +270,7 @@ class ProductionTool:
         """
         Calculate current punch statistics from Excel and sync to manager database.
         FUNCTIONAL USE: Counts open/implemented/closed punches from Excel Punch Sheet (rows 9+).
-        Syncs cabinet status and statistics to manager.db for dashboard visibility.
+        Syncs cabinet status and statistics to the manager PostgreSQL schema for dashboard visibility.
         Called during production work to update manager on progress.
         """
         if not self.cabinet_id:
@@ -599,6 +598,7 @@ class ProductionTool:
         self.canvas.bind("<ButtonRelease-1>", self.leftrls)
         self.canvas.bind("<Double-Button-1>", self.doubleclick)
         self.canvas.bind("<Double-Button-3>", self.doubleright)
+        self._bind_display_mouse_controls()
         
         # Modern status bar
         status_bar = tk.Frame(self.root, bg='#334155', height=40)
@@ -607,6 +607,63 @@ class ProductionTool:
         instructions_text = "Pen: Freehand | Text: Click to add | Esc: Deactivate | Ctrl+Z: Undo"
         tk.Label(status_bar, text=instructions_text, bg='#334155', fg='#e2e8f0',
                 font=('Segoe UI', 9), pady=10).pack()
+
+    def _bind_display_mouse_controls(self):
+        """Register wheel scrolling handlers for the PDF display canvas."""
+        if getattr(self, '_display_mouse_controls_bound', False):
+            return
+
+        self.root.bind_all("<MouseWheel>", self._on_display_mousewheel, add="+")
+        self.root.bind_all("<Shift-MouseWheel>", self._on_display_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_display_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_display_mousewheel, add="+")
+        self.root.bind_all("<Shift-Button-4>", self._on_display_mousewheel, add="+")
+        self.root.bind_all("<Shift-Button-5>", self._on_display_mousewheel, add="+")
+
+        self._display_mouse_controls_bound = True
+
+    def _is_pointer_over_canvas(self):
+        """Return True when the mouse pointer is over the display canvas."""
+        if not hasattr(self, 'canvas') or not self.canvas or not self.canvas.winfo_exists():
+            return False
+
+        try:
+            widget = self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        except tk.TclError:
+            return False
+
+        while widget is not None:
+            if widget == self.canvas:
+                return True
+            widget = widget.master
+        return False
+
+    def _on_display_mousewheel(self, event):
+        """Scroll the display canvas with the mouse wheel when hovering over it."""
+        if not self._is_pointer_over_canvas():
+            return
+
+        delta = 0
+        if getattr(event, 'num', None) == 4:
+            delta = 1
+        elif getattr(event, 'num', None) == 5:
+            delta = -1
+        elif getattr(event, 'delta', 0):
+            delta = 1 if event.delta > 0 else -1
+
+        if delta == 0:
+            return
+
+        horizontal = bool(getattr(event, 'state', 0) & 0x0001)
+        try:
+            if horizontal:
+                self.canvas.xview_scroll(-delta, "units")
+            else:
+                self.canvas.yview_scroll(-delta, "units")
+        except tk.TclError:
+            return
+
+        return "break"
     
     def updtoolpane(self):
         """Placeholder for tool pane update - not needed in production mode"""
@@ -2108,6 +2165,7 @@ class ProductionTool:
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         self.zoomin(x, y, +0.25)
+        return "break"
     
     def doubleright(self, event):
         """
@@ -2120,6 +2178,7 @@ class ProductionTool:
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
         self.zoomin(x, y, -0.25)
+        return "break"
     
     def prev(self):
         """

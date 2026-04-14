@@ -1,27 +1,26 @@
 """
-Handover Database Manager - SQLite Version
-Manages Quality <-> Production handover workflow using SQLite
-Integrated with inspection_tool.db
+Handover Database Manager - PostgreSQL Version
+Manages Quality <-> Production handover workflow on PostgreSQL
+Integrated with the handover_db schema
 """
 
-import sqlite3
+import pg_sqlite_compat as sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
 import os
 
 
 class HandoverDB:
-    """Manages handover records between Quality and Production using SQLite"""
+    """Manages handover records between Quality and Production using PostgreSQL"""
     
     def __init__(self, db_path: str = None):
         """Initialize database at specified path
         
         Args:
-            db_path: Path to SQLite database file. If None, uses inspection_tool.db
+            db_path: Logical schema key used by pg_sqlite_compat. If None, uses handover_db.
         """
         if db_path is None:
-            # Default to inspection_tool.db in same directory as this script
-            db_path = os.path.join(os.path.dirname(__file__), "inspection_tool.db")
+            db_path = "handover_db"
         
         self.db_path = db_path
         self._init_tables()
@@ -102,7 +101,7 @@ class HandoverDB:
         
         conn.commit()
         conn.close()
-        print("✓ Handover database tables initialized")
+        print("[OK] Handover database tables initialized")
     
     def _migrate_database(self):
         """Apply database migrations for schema updates"""
@@ -123,7 +122,7 @@ class HandoverDB:
                 ''')
                 migrations_applied.append("Added verification_notes column to production_to_quality")
             except Exception as e:
-                print(f"⚠️ Migration error (verification_notes): {e}")
+                print(f"[WARN] Migration error (verification_notes): {e}")
         
         # Future migrations can be added here as needed
         # Example:
@@ -137,7 +136,7 @@ class HandoverDB:
         if migrations_applied:
             conn.commit()
             for msg in migrations_applied:
-                print(f"✓ Migration: {msg}")
+                print(f"[OK] Migration: {msg}")
         
         conn.close()
     
@@ -206,7 +205,7 @@ class HandoverDB:
             
             conn.commit()
             conn.close()
-            print(f"✓ Quality handover added: {handover_data['cabinet_id']}")
+            print(f"[OK] Quality handover added: {handover_data['cabinet_id']}")
             return True
             
         except Exception as e:
@@ -288,7 +287,7 @@ class HandoverDB:
             conn.close()
             
             if affected > 0:
-                print(f"✓ Production status updated: {cabinet_id} -> {status}")
+                print(f"[OK] Production status updated: {cabinet_id} -> {status}")
                 return True
             return False
             
@@ -355,7 +354,7 @@ class HandoverDB:
             
             conn.commit()
             conn.close()
-            print(f"✓ Production handback added: {handback_data['cabinet_id']}")
+            print(f"[OK] Production handback added: {handback_data['cabinet_id']}")
             return True
             
         except Exception as e:
@@ -639,7 +638,7 @@ class HandoverDB:
             conn.commit()
             conn.close()
             
-            print(f"✓ Cleanup: Removed {qtp_deleted} from quality_to_production, "
+            print(f"[OK] Cleanup: Removed {qtp_deleted} from quality_to_production, "
                   f"{ptq_deleted} from production_to_quality")
             
         except Exception as e:

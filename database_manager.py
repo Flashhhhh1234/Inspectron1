@@ -1,11 +1,11 @@
-import sqlite3
+import pg_sqlite_compat as sqlite3
 import json
 import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
 class DatabaseManager:
-    """Centralized SQLite database manager for the Quality Inspection Tool"""
+    """Centralized PostgreSQL database manager for the Quality Inspection Tool"""
     
     def __init__(self, db_path: str):
         """Initialize database connection and create tables if needed"""

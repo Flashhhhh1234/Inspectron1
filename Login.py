@@ -35,7 +35,7 @@ def load_credentials():
         }
         with open(CRED_FILE, "w") as f:
             json.dump(default_creds, f, indent=4)
-        print(f"✓ Created default credentials at: {CRED_FILE}")
+        print(f"[OK] Created default credentials at: {CRED_FILE}")
         return default_creds
     
     with open(CRED_FILE, "r") as f:
@@ -59,17 +59,19 @@ def authenticate_user(username, password, credentials):
 # ====================================================== 
 def route_to_role(username, full_name, role):
     """Route to appropriate module with username and full_name as command-line arguments"""
+    python_exec = sys.executable or "python"
+
     if role == "Quality":
         # Pass both username and full_name to quality module
         quality_path = os.path.join(BASE_DIR, "quality.py")
-        subprocess.Popen(["python", quality_path, username, full_name])
+        subprocess.Popen([python_exec, quality_path, username, full_name])
     elif role == "Manager":
         manager_path = os.path.join(BASE_DIR, "manager.py")
-        subprocess.Popen(["python", manager_path, username, full_name])
+        subprocess.Popen([python_exec, manager_path, username, full_name])
     elif role == "Production":
         # Pass both username and full_name to production module
         production_path = os.path.join(BASE_DIR, "production.py")
-        subprocess.Popen(["python", production_path, username, full_name])
+        subprocess.Popen([python_exec, production_path, username, full_name])
     elif role == "Admin":
         messagebox.showinfo("Admin", "Admin panel opened!")
     else:
@@ -295,20 +297,20 @@ class LoginPage:
                 
                 logo_label = tk.Label(header_frame, image=self.logo_photo,bg="#2b2b2b")
                 logo_label.pack(pady=10)
-                print(f"✓ Logo loaded from: {logo_path}")
+                print(f"[OK] Logo loaded from: {logo_path}")
             else:
                 # Fallback to text if logo not found
                 tk.Label(header_frame, text="INPROCESS TOOL", 
                         font=("Segoe UI", 26, "bold"), 
                         bg="#1e1e1e", fg="#00bcd4").pack(pady=30)
-                print(f"⚠️ Logo not found at: {logo_path}")
+                print(f"[WARN] Logo not found at: {logo_path}")
                 print(f"   Please place EmersonLogo.png in the assets folder")
         except Exception as e:
             # Fallback to text if error loading logo
             tk.Label(header_frame, text="INPROCESS TOOL", 
                     font=("Segoe UI", 26, "bold"), 
                     bg="#1e1e1e", fg="#00bcd4").pack(pady=30)
-            print(f"⚠️ Error loading logo: {e}")
+            print(f"[WARN] Error loading logo: {e}")
         
         # Main container
         container = tk.Frame(root, bg="#2b2b2b")

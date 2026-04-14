@@ -7,10 +7,11 @@ import sys
 import subprocess
 from datetime import datetime, timedelta
 from collections import defaultdict
-import sqlite3
+import pg_sqlite_compat as sqlite3
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.chart import BarChart, Reference
+from openpyxl.utils import get_column_letter
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
@@ -62,7 +63,7 @@ class ManagerDatabase:
     Database access and business logic layer for the Manager Dashboard.
 
     Responsible for:
-    - SQLite database initialization and queries
+    - PostgreSQL database initialization and queries
     - Reading punch data from Excel files
     - Status determination from Interphase sheets
     - Aggregated statistics for dashboard and analytics views
@@ -95,7 +96,7 @@ class ManagerDatabase:
     
     def initializedb(self):
         """
-        Create required SQLite tables if they do not already exist.
+        Create required PostgreSQL tables if they do not already exist.
     
         Tables:
         - cabinets: cabinet-level tracking and status
@@ -503,7 +504,7 @@ class ManagerUI:
         Initialize the application UI, database, and configuration files.
     
         Loads:
-        - SQLite database
+        - PostgreSQL database
         - Defect categories JSON
         - Excel template paths
         """
@@ -512,7 +513,7 @@ class ManagerUI:
         self.root.geometry("1600x900")
         
         base_dir = getbase()
-        self.db = ManagerDatabase(os.path.join(base_dir, "manager.db"))
+        self.db = ManagerDatabase("manager")
         self.category_file = os.path.join(os.path.dirname(base_dir), "assets", "categories.json")
         self.template_excel_file = os.path.join(base_dir, "Emerson.xlsx")
         self.categories = self.loadcat()
@@ -698,10 +699,22 @@ class ManagerUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Mousewheel scrolling
+        # Mousewheel scrolling (safe bind/unbind to avoid callbacks on destroyed canvases)
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except tk.TclError:
+                pass
+
+        def _bind_mousewheel(_event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+        canvas.bind("<Destroy>", _unbind_mousewheel)
         
         # Header with search bar
         header = tk.Frame(center_container, bg='#f8fafc')
@@ -731,7 +744,7 @@ class ManagerUI:
                 filtered_projects = self.db.getallproj()
             self.updtprojlist(scroll_frame, filtered_projects)
         
-        search_var.trace('w', on_search)
+        search_var.trace_add('write', on_search)
         search_entry.insert(0, "Search projects...")
         search_entry.config(fg='#94a3b8')
         
@@ -903,27 +916,6 @@ class ManagerUI:
             
             # REMOVED Debug button
     
-    def opnxcl(self, excel_path):
-        
-        """Open Excel file in default application"""
-        if not excel_path or not os.path.exists(excel_path):
-            messagebox.showwarning("File Not Found", 
-                                 f"Excel file not found:\n{excel_path or 'No path specified'}")
-            return
-        
-        try:
-            if sys.platform == 'win32':
-                os.startfile(excel_path)
-            elif sys.platform == 'darwin':  # macOS
-                subprocess.Popen(['open', excel_path])
-            else:  # linux
-                subprocess.Popen(['xdg-open', excel_path])
-            
-            messagebox.showinfo("Opening Excel", 
-                              f"Opening:\n{os.path.basename(excel_path)}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open Excel file:\n{e}")
-    
     # ============ ANALYTICS - INTEGRATED SEARCH WITH FILTERS ============
     def analytics(self):
         """
@@ -990,7 +982,7 @@ class ManagerUI:
                 suggestion_frame.pack_forget()
                 apply_filters()
         
-        search_var.trace('w', update_suggestions)
+        search_var.trace_add('write', update_suggestions)
         suggestion_listbox.pack(fill=tk.X, padx=10, pady=5)
         suggestion_listbox.bind('<<ListboxSelect>>', select_suggestion)
         
@@ -1081,9 +1073,9 @@ class ManagerUI:
                 custom_date_frame.pack_forget()
                 apply_filters()
         
-        date_filter_var.trace('w', show_custom_date)
-        level_var.trace('w', lambda *args: apply_filters())
-        problematic_var.trace('w', lambda *args: apply_filters())
+        date_filter_var.trace_add('write', show_custom_date)
+        level_var.trace_add('write', lambda *args: apply_filters())
+        problematic_var.trace_add('write', lambda *args: apply_filters())
         
         # Chart frame
         self.chart_frame = tk.Frame(self.content, bg='white')
@@ -1887,10 +1879,22 @@ class ManagerUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Mousewheel scrolling
+        # Mousewheel scrolling (safe bind/unbind to avoid callbacks on destroyed canvases)
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except tk.TclError:
+                pass
+
+        def _bind_mousewheel(_event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+        canvas.bind("<Destroy>", _unbind_mousewheel)
         
         for cat in self.categories:
             self.createcatcard(scroll_frame, cat)
@@ -2704,30 +2708,43 @@ Warning: Modifying the template structure may cause errors in Quality and Produc
                  bg='#8b5cf6', fg='white', font=('Segoe UI', 10, 'bold'),
                  padx=20, pady=10, relief=tk.FLAT, cursor='hand2').pack(pady=(0, 20))
     
-    def opnxcl(self):
-        """Open template Excel file in default application"""
-        if not os.path.exists(self.template_excel_file):
-            messagebox.showerror("Template Not Found", 
-                               f"Template file not found:\n{self.template_excel_file}")
+    def opnxcl(self, excel_path=None):
+        """Open either a cabinet Excel file (when path is provided) or the template Excel file."""
+        target_path = excel_path or self.template_excel_file
+
+        if not target_path or not os.path.exists(target_path):
+            if excel_path:
+                messagebox.showwarning("File Not Found",
+                                     f"Excel file not found:\n{excel_path or 'No path specified'}")
+            else:
+                messagebox.showerror("Template Not Found",
+                                   f"Template file not found:\n{self.template_excel_file}")
             return
-        
+
         try:
             if sys.platform == 'win32':
-                os.startfile(self.template_excel_file)
+                os.startfile(target_path)
             elif sys.platform == 'darwin':
-                subprocess.Popen(['open', self.template_excel_file])
+                subprocess.Popen(['open', target_path])
             else:
-                subprocess.Popen(['xdg-open', self.template_excel_file])
-            
-            messagebox.showinfo("Template Opened", 
-                              "Template Excel file opened.\n\n"
-                              "⚠️ Important:\n"
-                              "• Do not modify sheet names\n"
-                              "• Do not change header structure\n"
-                              "• Save changes before closing\n\n"
-                              "Changes will affect all new projects.")
+                subprocess.Popen(['xdg-open', target_path])
+
+            if excel_path:
+                messagebox.showinfo("Opening Excel",
+                                  f"Opening:\n{os.path.basename(target_path)}")
+            else:
+                messagebox.showinfo("Template Opened",
+                                  "Template Excel file opened.\n\n"
+                                  "⚠️ Important:\n"
+                                  "• Do not modify sheet names\n"
+                                  "• Do not change header structure\n"
+                                  "• Save changes before closing\n\n"
+                                  "Changes will affect all new projects.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to open template:\n{e}")
+            if excel_path:
+                messagebox.showerror("Error", f"Failed to open Excel file:\n{e}")
+            else:
+                messagebox.showerror("Error", f"Failed to open template:\n{e}")
     
     def replacexcl(self):
         """Replace template Excel with a new file"""
