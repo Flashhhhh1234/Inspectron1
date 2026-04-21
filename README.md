@@ -177,7 +177,6 @@ Inspectron1/
 ├── filedialog_compat.py
 ├── README.md
 └── assets/
-    ├── credentials.json
     └── postgres.json
 ```
 
