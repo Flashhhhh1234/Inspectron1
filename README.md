@@ -177,7 +177,6 @@ Inspectron1/
 ├── filedialog_compat.py
 ├── README.md
 └── assets/
-    ├── credentials.json
     └── postgres.json
 ```
 
@@ -572,4 +571,4 @@ resolve_storage_location(stored_value: str | None) -> str
 
 Document Version: 2.0.0
 Last Updated: April 21, 2026
-Maintained By: Inspectron1 Contributors
+Maintained By: Kshitij Palshikar
