@@ -4,41 +4,54 @@
 
 ## Overview
 
-Inspectron1 is a comprehensive quality inspection and production management system designed for manufacturing environments. It provides integrated tools for quality inspectors, production teams, and managers to conduct detailed inspections, track defects, manage rework cycles, and maintain complete audit trails of all manufacturing processes.
+Inspectron1 is a desktop quality-inspection platform for electrical/control cabinet workflows. It provides a role-driven process for:
 
-The system combines PDF annotation capabilities with Excel-based punch sheets, optical character recognition (OCR) for automated data extraction, and intelligent workflow management to streamline the quality assurance process.
+- Quality inspection and punch creation on PDF drawings
+- Production rework execution and handback
+- Manager-level dashboarding and Pareto analytics
+- Admin user maintenance
+
+The application is implemented as a Tkinter-based multi-module system where Login dispatches users to role-specific interfaces. The latest codebase has moved core persistence behavior to a PostgreSQL-backed compatibility layer, while retaining sqlite-style data-access code for minimal disruption.
 
 ---
 
 - [Overview](#overview)
 - [System Architecture](#system-architecture)
   - [Technology Stack](#technology-stack)
-  - [System Flow](#system-flow)
+  - [Runtime Architecture](#runtime-architecture)
+  - [Data Architecture](#data-architecture)
+  - [Recent Codebase Changes](#recent-codebase-changes)
 - [Installation & Setup](#installation--setup)
   - [Prerequisites](#prerequisites)
   - [Dependencies Installation](#dependencies-installation)
   - [Project Setup Steps](#project-setup-steps)
   - [Directory Structure](#directory-structure)
+  - [Configure PostgreSQL and Base Path](#configure-postgresql-and-base-path)
   - [Set Tesseract Path (Windows)](#set-tesseract-path-windows)
   - [Launch Application](#launch-application)
 - [Core Modules](#core-modules)
-  1. [Login.py – Authentication & User Management](#1-loginpy--authentication--user-management)
-  2. [quality.py – Quality Inspection Tool](#2-qualitypy--quality-inspection-tool)
-  3. [production.py – Production Rework Tool](#3-productionpy--production-rework-tool)
-  4. [manager.py – Management Analytics](#4-managerpy--management-analytics)
-  5. [database_manager.py – SQLite Database Operations](#5-database_managerpy--sqlite-database-operations)
-  6. [handover_database.py – Workflow Management](#6-handover_databasepy-handoverdb--workflow-management)
+  1. [Login.py - Authentication, Routing, and Admin UI](#1-loginpy---authentication-routing-and-admin-ui)
+  2. [quality.py - Quality Inspection Workbench](#2-qualitypy---quality-inspection-workbench)
+  3. [production.py - Production Rework Workbench](#3-productionpy---production-rework-workbench)
+  4. [manager.py - Dashboard, Analytics, and Category Governance](#4-managerpy---dashboard-analytics-and-category-governance)
+  5. [database_manager.py - Project and Handover Data Access](#5-database_managerpy---project-and-handover-data-access)
+  6. [handover_database.py - Queue-Oriented Handover Lifecycle](#6-handover_databasepy---queue-oriented-handover-lifecycle)
+  7. [pg_sqlite_compat.py - sqlite-to-PostgreSQL Compatibility Layer](#7-pg_sqlite_compatpy---sqlite-to-postgresql-compatibility-layer)
+  8. [category_store_pg.py and category_catalog_format.py - Defect Library Persistence](#8-category_store_pgpy-and-category_catalog_formatpy---defect-library-persistence)
+  9. [credentials_store_pg.py - Credential Table Persistence](#9-credentials_store_pgpy---credential-table-persistence)
+  10. [path_policy.py and filedialog_compat.py - Runtime Resilience Utilities](#10-path_policypy-and-filedialog_compatpy---runtime-resilience-utilities)
 - [User Workflows](#user-workflows)
   - [Quality Inspector Workflow](#quality-inspector-workflow)
   - [Production Team Workflow](#production-team-workflow)
   - [Manager Workflow](#manager-workflow)
+  - [Admin Workflow](#admin-workflow)
 - [Key Features](#key-features)
-  - [PDF Annotation System](#1-pdf-annotation-system)
-  - [Optical Character Recognition (OCR)](#2-optical-character-recognition-ocr)
-  - [Excel Integration](#3-excel-integration)
-  - [Workflow Management](#4-workflow-management)
-  - [Analytics & Reporting](#5-analytics--reporting)
-  - [Session Management](#6-session-management)
+  - [1. Drawing Annotation and Punch Capture](#1-drawing-annotation-and-punch-capture)
+  - [2. OCR-Assisted Description Building](#2-ocr-assisted-description-building)
+  - [3. Excel-Driven Execution Model](#3-excel-driven-execution-model)
+  - [4. Quality-Production Queue Lifecycle](#4-quality-production-queue-lifecycle)
+  - [5. Management Analytics and Pareto Reporting](#5-management-analytics-and-pareto-reporting)
+  - [6. Frozen-Build and Path Compatibility](#6-frozen-build-and-path-compatibility)
 - [API Reference](#api-reference)
 - [Performance Considerations](#performance-considerations)
 - [Security Notes](#security-notes)
@@ -51,42 +64,58 @@ The system combines PDF annotation capabilities with Excel-based punch sheets, o
 
 ### Technology Stack
 
-- **Language:** Python 3.7+
-- **GUI Framework:** Tkinter (standard Python GUI library)
-- **PDF Processing:** PyMuPDF (fitz) for PDF manipulation
-- **Database:** SQLite3 for persistent data storage
-- **Data Format:** JSON for configuration and structured data storage
-- **Excel Processing:** openpyxl for spreadsheet management
-- **OCR Engine:** Tesseract for optical character recognition
-- **Image Processing:** OpenCV and PIL for image handling
-- **Visualization:** Matplotlib for analytics and charts
+- Language: Python 3.x
+- GUI: Tkinter
+- PDF engine: PyMuPDF (fitz)
+- Spreadsheet engine: openpyxl
+- OCR stack: pytesseract + OpenCV + PIL
+- Charting and visualization: matplotlib
+- Data layer: PostgreSQL accessed through sqlite-style compatibility wrapper
+- Data serialization: JSON (sessions/config)
 
-### System Flow
+### Runtime Architecture
 
+Inspectron1 is launched from a single entry point and routed by role:
+
+```text
+Login.py
+  |
+  +-- Admin      -> In-process AdminPanel and user management dialogs
+  +-- Quality    -> quality.py
+  +-- Production -> production.py
+  +-- Manager    -> manager.py
 ```
-User Authentication (Login.py)
-    |
-    +-- Quality Inspector --> quality.py (Annotation & Defect Logging)
-    |                            |
-    |                            +-- Highlight defects with OCR extraction
-    |                            +-- Log punches to Excel
-    |                            +-- Export annotated PDFs
-    |                            +-- Handover to Production
-    |
-    +-- Production Team ----> production.py (Rework Management)
-    |                           |
-    |                           +-- Review defects highlighted by quality
-    |                           +-- Implement fixes
-    |                           +-- Mark punches as completed
-    |                           +-- Handback to Quality
-    |
-    +-- Manager ------------> manager.py (Analytics & Oversight)
-                                |
-                                +-- View cabinet statistics
-                                +-- Pareto analysis of defects
-                                +-- Category library management
-                                +-- Template Excel configuration
-```
+
+Key runtime behavior:
+
+- Login dispatches role scripts by passing username and full name as argv data
+- In frozen distribution mode, bundled pages and assets are resolved via _MEIPASS-aware logic
+- In source mode, role modules are launched through the same login script with module arguments
+
+### Data Architecture
+
+Inspectron1 uses three logical database keys, all routed through the compatibility layer:
+
+- inspection_tool: project records, recent projects, quality handovers, credential/category lookups
+- manager: cabinet snapshots and category occurrence analytics
+- handover_db: queue lifecycle between quality and production
+
+Important implementation detail:
+
+- pg_sqlite_compat.py keeps sqlite-like connect/cursor/execute semantics while translating SQL and placeholders for PostgreSQL
+- Logical db keys are interpreted as PostgreSQL schema names for search_path routing when non-public
+- category and credentials modules load schema hints from assets/postgres.json and use fully qualified table names where required
+
+### Recent Codebase Changes
+
+The current repository state reflects these notable updates:
+
+- Migration from sqlite storage assumptions to PostgreSQL-backed compatibility usage
+- Dedicated credential persistence in credentials_store_pg.py
+- Dedicated category catalog persistence in category_store_pg.py using normalized tables
+- Centralized storage path normalization with path_policy.py for base-path-safe relative persistence
+- File dialog fallback wrapper in filedialog_compat.py for environments where tkinter.filedialog is unavailable
+- Enhanced frozen-app handling for module loading and asset resolution in Login.py and role modules
 
 ---
 
@@ -94,1054 +123,453 @@ User Authentication (Login.py)
 
 ### Prerequisites
 
-- Python 3.7 or higher
-- pip (Python package manager)
-- SQLite3 (included with Python)
-- Tesseract OCR engine
+- Python 3.9+
+- pip
+- PostgreSQL server reachable by the application runtime
+- Tesseract OCR engine installed on workstation
 
 ### Dependencies Installation
 
 ```bash
-# Install required Python packages
-pip install openpyxl
 pip install pillow
 pip install pymupdf
+pip install openpyxl
+pip install numpy
 pip install opencv-python
 pip install pytesseract
 pip install matplotlib
-pip install numpy
-
-# Install Tesseract OCR (Windows)
-# Download installer from: https://github.com/UB-Mannheim/tesseract/wiki
-
-# Or for Linux:
-sudo apt-get install tesseract-ocr
-
-# Or for macOS:
-brew install tesseract
+pip install psycopg2-binary
 ```
+
+Tesseract installation:
+
+- Windows: install from UB Mannheim Tesseract build or official package
+- Linux: install tesseract-ocr from distribution repositories
+- macOS: install with Homebrew
 
 ### Project Setup Steps
-create an "assets" folder , With the categories.json file , credentials.json file, "EmersonLogo.png","text.png","pen.png" , create another folder " pages " and download all the codes inside of it , the database files will autosetup . 
+
+1. Clone or copy the repository into a local working directory.
+2. Ensure PostgreSQL is accessible from the machine running the app.
+3. Verify that required database tables exist in the expected schema(s).
+4. Prepare runtime assets that are referenced by the UI but may not be committed in this repository snapshot:
+   - Emerson.xlsx (master template in application base directory)
+   - pen_icon.png, text_icon.png, undo_icon.png (assets folder)
+5. Confirm OCR executable availability (PATH, TESSERACT_CMD, or default install path).
+6. Start from Login.py and authenticate with a valid role.
 
 ### Directory Structure
-```
-Inspectron/
-├── assets/
-|        ├──categories.json
-|        ├── credentials.json
-|        ├── EmersonLogo.png
-|        ├── pen.png
-|        ├── text.png
-|        ├── undo.png
-├── pages/
-         ├──quality.py
-         ├──production.py
-         ├──manager.py
-         ├──database_manager.py
-         ├──handover_database.py
-         ├──Login.py
-```
-### Set Tesseract Path (Windows)
-   - In `quality.py`, update the path:
-   ```python
-   path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-   if os.path.exists(path):
-       pytesseract.pytesseract.tesseract_cmd = path
-   
-   ```
 
- ### Launch Application
-   ```bash
-   python Login.py
-   ```
+```text
+Inspectron1/
+├── __init__.py
+├── Login.py
+├── quality.py
+├── production.py
+├── manager.py
+├── database_manager.py
+├── handover_database.py
+├── pg_sqlite_compat.py
+├── category_store_pg.py
+├── category_catalog_format.py
+├── credentials_store_pg.py
+├── path_policy.py
+├── filedialog_compat.py
+├── README.md
+└── assets/
+    ├── credentials.json
+    └── postgres.json
+```
+
+### Configure PostgreSQL and Base Path
+
+The application reads assets/postgres.json for schema and shared path metadata in supporting modules.
+
+Example:
+
+```json
+{
+  "postgres": {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "inspection_tool",
+    "user": "postgres",
+    "password": "your_password",
+    "schema": "public",
+    "base_path": "\\\\server\\share\\projects"
+  }
+}
+```
+
+Notes:
+
+- path_policy.py resolves persisted relative paths against base_path
+- values outside base_path are rejected when path-policy conversion is applied
+- pg_sqlite_compat.py currently contains fixed connection constants in code; align these with your deployment policy before production use
+
+### Set Tesseract Path (Windows)
+
+quality.py resolves OCR executable path in this order:
+
+1. TESSERACT_CMD environment variable
+2. TESSERACT_PATH environment variable
+3. tesseract found on PATH
+4. common install locations
+
+If needed, set an environment variable before launch:
+
+```powershell
+setx TESSERACT_CMD "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+### Launch Application
+
+```bash
+python Login.py
+```
 
 ---
 
 ## Core Modules
 
-### 1. Login.py - Authentication & User Management
+### 1. Login.py - Authentication, Routing, and Admin UI
 
-**Purpose:** Manages user login, credential validation, and role-based access control.
+Purpose:
 
-**Key Classes:**
+- Loads user credentials from PostgreSQL-backed credential storage
+- Authenticates users and routes them to role modules
+- Provides Admin UI for add/edit/delete user operations
+- Supports both source execution and frozen executable dispatch
 
-#### LoginPage
-- **Purpose:** Main login interface
-- **Methods:**
-  - `validate_login()` - Checks credentials against stored database
-  - `open_admin()` - Opens admin panel for user management
+Key functions:
 
-#### AdminPanel
-- **Purpose:** User management interface
-- **Methods:**
-  - `refresh_users()` - Reloads user list from credentials
-  - `add_user()` - Creates new user account
-  - `edit_user()` - Modifies existing user
-  - `delete_user()` - Removes user account (except admin)
+- load_credentials()
+- save_credentials(credentials)
+- authenticate_user(username, password, credentials)
+- route_to_role(username, full_name, role)
+- dispatch_from_args()
 
-#### AddEditUserDialog
-- **Purpose:** Dialog for adding or editing users
-- **Methods:**
-  - `save_user()` - Persists user data to credentials.json
+Primary classes:
 
-**Key Functions:**
+- LoginPage: login form and role routing trigger
+- AdminPanel: user list management surface
+- AddEditUserDialog: user creation/edit modal
 
-```python
-def load_credentials():
-    """Load user credentials from assets/credentials.json
-    
-    Returns:
-        dict: Dictionary with users and their properties
-    """
-    
-def save_credentials(credentials):
-    """Save credentials to file with proper JSON formatting
-    
-    Args:
-        credentials (dict): Dictionary to save
-    """
-    
-def authenticate_user(username, password, credentials):
-    """Validate username and password combination
-    
-    Args:
-        username (str): Username to validate
-        password (str): Password to validate
-        credentials (dict): Credentials database
-        
-    Returns:
-        tuple: (role, full_name) if valid, (None, None) if invalid
-    """
-    
-def route_to_role(username, full_name, role):
-    """Launch appropriate application module based on user role
-    
-    Args:
-        username (str): Logged-in username
-        full_name (str): User's full name
-        role (str): User's role (Quality, Production, Manager, Admin)
-    """
-```
+### 2. quality.py - Quality Inspection Workbench
 
-**Supported Roles:**
-- **Admin:** Full system access, user management
-- **Quality:** Quality inspection module access
-- **Production:** Production rework module access
-- **Manager:** Dashboard and analytics access
+Purpose:
 
----
+- Drives drawing-based quality inspection on PDF documents
+- Creates and tracks punch entries in the Punch Sheet worksheet
+- Maintains annotation sessions, handover transitions, and manager sync
 
-### 2. quality.py - Quality Inspection Tool
+Major capability groups:
 
-**Purpose:** Primary tool for quality inspectors to annotate PDFs, log defects, and manage the inspection workflow.
+- Multi-tool annotation: highlighter, pen, text
+- OCR-assisted text extraction from highlighted defects
+- Dynamic defect categorization from PostgreSQL-backed category catalog
+- Interphase status update and checklist-style review operations
+- Session save/load and annotated PDF export
+- Quality to Production handover queue creation
 
-**Key Classes:**
+Important classes:
 
-#### CircuitInspector
-- **Purpose:** Main application controller for quality inspection
-- **Major Methods:**
+- ManagerDB: manager schema update helpers (status, cabinet stats, category occurrences)
+- CircuitInspector: end-to-end quality UI controller and workflow orchestrator
 
-```python
-def loadpdf():
-    """Open and load a PDF file for inspection
-    tries to read project details from the drawings
-    as a fallback-> Prompts user for project details,
-    autoloads a storage location for known project names if not -> creates directory structure,
-    then initializes the working Excel file.
-    the working excel file is an all acessible file where the live changes will be shown and implemented
+### 3. production.py - Production Rework Workbench
 
+Purpose:
 
-    Another way to load files is using the 
+- Loads pending handover items from queue
+- Guides rework completion punch-by-punch
+- Records implementation details and returns cabinets to quality verification
 
-    """
+Major capability groups:
 
-def display():
-    """Render current PDF page with all annotations
-    
-    Handles:
-    - Conversion of page to displayable image
-    - Rendering of highlighter strokes
-    - Rendering of pen annotations
-    - Rendering of text annotations
-    - Coordinate transformation for zoom and scroll
-    """
+- Queue intake from quality_to_production
+- Annotation navigation to exact defect locations
+- Implemented/closed punch tracking through Excel
+- Complete-and-handback action into production_to_quality queue
+- Manager snapshot sync for progress visibility
 
-def exctracttxt(annotation):
-    """Extract text from highlighted region using OCR
-    
-    Args:
-        annotation (dict): Highlight annotation with bbox_page
-        
-    Returns:
-        str: Extracted text in uppercase, or None if extraction fails
-        
-    Process:
-    1. Crop image to highlight boundaries with padding
-    2. Upscale image 2x for better OCR accuracy
-    3. Convert to grayscale and apply threshold
-    4. Run Tesseract OCR
-    5. Validate text is all capitals
-    """
+Important classes:
 
-def leftclick(event):
-    """Handle mouse button down events
-    
-    Initiates annotation based on active tool:
-    - Highlighter: Start collecting points for highlight stroke
-    - Pen: Start collecting points for pen drawing
-    - Text: Record position for text annotation
-    """
+- ManagerDB: cabinet status and stat update bridge for manager schema
+- ProductionTool: production UI and rework execution controller
 
-def leftdrag(event):
-    """Handle mouse movement while button held
-    
-    For highlighter and pen tools, draws visual feedback line
-    and accumulates points for the stroke.
-    """
+### 4. manager.py - Dashboard, Analytics, and Category Governance
 
-def leftrel(event):
-    """Complete annotation after mouse button release
-    
-    For highlighter (orange only):
-    - Straightens path
-    - Extracts text from highlighted area
-    - Shows category menu for logging punch
-    
-    For pen and text:
-    - Adds annotation to collection
-    - Triggers display refresh
-    """
+Purpose:
 
-def savesession():
-    """Save all annotations to JSON file
-    
-    Serializes annotations with coordinate conversion:
-    - Highlighter points to list format
-    - Bounding boxes for error highlights
-    - Text positions for annotations
-    - Metadata (sr_no, ref_no, category, etc.)
-    """
+- Provides management-level project visibility and defect analytics
+- Allows category library maintenance and export workflows
+- Supports template workbook governance flows
 
-def loadfrompath(path):
-    """Load previously saved annotation session
-    
-    Deserializes JSON and reconstructs all annotations,
-    maintaining proper coordinate format and metadata.
-    """
+Major capability groups:
 
-def exportpdf():
-    """Create annotated PDF with all marks
-    
-    Adds to PDF:
-    - Ink annotations for highlighter strokes
-    - Line drawings for pen strokes
-    - Text annotations with timestamps
-    - SR numbers for closed punches
-    """
+- Dashboard cards for daily/weekly/monthly/financial-year cabinet counts
+- Project search and cabinet expansion with real-time punch data read from Excel
+- Pareto-style category/subcategory analytics
+- Date and project-based filtering for report context
+- Category CRUD via PostgreSQL-backed normalized category tables
 
-def reviewnow():
-    """Open Interphase checklist review dialog
-    
-    Displays items needing status (OK/NOK/N/A),
-    allows user to mark progress and add remarks.
-    """
+Important classes:
 
-def punchclosing():
-    """Interactive mode for closing logged defects
-    
-    Workflow:
-    1. Load open punches from Excel
-    2. Display each punch for review
-    3. Allow adding quality remarks
-    4. Mark punch as closed
-    5. Convert orange highlight to green
-    """
+- ManagerDatabase: analytics and cabinet data-access layer
+- ManagerUI: navigation, dashboard, analytics, and configuration surfaces
 
-def handover():
-    """Hand cabinet to production for rework
-    
-    Validates:
-    - Checklist completion
-    - Saves current session
-    - Creates handover record
-    - Updates cabinet status
-    """
+### 5. database_manager.py - Project and Handover Data Access
 
-def autofin():
-    """Automatically finalize cabinet when all work complete
-    
-    Conditions checked:
-    - Zero open punches
-    - Checklist fully reviewed
-    - Then: saves Excel, exports PDF, marks closed
-    """
-```
+Purpose:
 
-**Highlighter System:**
+- Central manager for project metadata persistence and retrieval
+- Tracks recent projects
+- Maintains quality_handover records and status transitions
 
-The tool uses color-coded highlighters for different purposes:
+Key methods include:
 
-- **Orange Highlighter:** Marks defects requiring action
-  - Supports OCR text extraction
-  - Automatically extracts text from highlighted area
-  - Shows menu to classify defect
-  - Converts to green when punch is closed
+- add_project(project_data)
+- update_project(cabinet_id, updates)
+- get_project(cabinet_id)
+- get_all_projects(status=None)
+- get_recent_projects(limit=20)
+- add_quality_handover(handover_data)
+- update_production_received(...)
+- update_production_completed(...)
+- update_quality_verification(...)
 
-- **Green Highlighter:** Marks approved/resolved items
-  - Used for quality-approved areas
-  - Shows SR number in exported PDF
+### 6. handover_database.py - Queue-Oriented Handover Lifecycle
 
-- **Yellow Highlighter:** General marking or wiring notes
-  - No OCR required
-  - Used for informational marking
+Purpose:
 
-**Defect Logging Workflow:**
+- Owns explicit quality_to_production and production_to_quality queue operations
+- Applies lightweight migration updates (for example, verification_notes)
+- Exposes helper methods for queue checks, verification, and queue removal
 
-```
-Orange Highlight (OCR extracts text)
-    |
-    +-- Select Category from categories.json
-    |       |
-    |       +-- Template Category: Auto-fills punch text
-    |       |
-    |       +-- Parent Category: Select subcategory
-    |       |       |
-    |       |       +-- Run subcategory template with OCR text pre-fill
-    |       |
-    |       +-- Wiring Selector: Select wiring type
-    |               |
-    |               +-- Select specific wiring defect
-    |
-    +-- Template execution with OCR-extracted text as first input
-    |
-    +-- Log punch to Excel (Auto-increment SR No, Ref No)
-    |
-    +-- Update Interphase status for Reference
-    |
-    +-- Store annotation with metadata
-```
+Key methods include:
 
-**Excel Integration:**
+- add_quality_handover(handover_data)
+- get_pending_production_items()
+- update_production_status(cabinet_id, status, user=None)
+- add_production_handback(handback_data)
+- get_pending_quality_items()
+- verify_production_item(...)
+- remove_from_rework_queue(...)
 
-Reads and writes to Punch Sheet:
-- Column A: SR No (serial number, auto-incremented)
-- Column B: Ref No (reference number, classification)
-- Column C: Description (defect description)
-- Column D: Category (defect category)
-- Column E: Checked Name (inspector who logged)
-- Column F: Checked Date (timestamp of logging)
-- Column G: Implemented Name (production implementer)
-- Column H: Implemented Date (rework completion timestamp)
-- Column I: Closed Name (quality inspector who closed)
-- Column J: Closed Date (final closure timestamp)
+### 7. pg_sqlite_compat.py - sqlite-to-PostgreSQL Compatibility Layer
+
+Purpose:
+
+- Lets legacy sqlite3-style code run against PostgreSQL
+- Preserves familiar usage patterns while translating syntax
+
+Notable behavior:
+
+- qmark placeholder translation from ? to %s
+- SQL rewrites for INSERT OR REPLACE and INSERT OR IGNORE
+- optional ALTER TABLE ADD COLUMN IF NOT EXISTS compatibility rewrite
+- Row mapping class that supports dict-style and index-style access
+- Connection/Cursor wrappers preserving expected sqlite-like semantics
+
+### 8. category_store_pg.py and category_catalog_format.py - Defect Library Persistence
+
+Purpose:
+
+- Loads and saves category catalogs from/to normalized PostgreSQL tables
+- Supports hierarchical category model:
+  - category types
+  - wiring types
+  - subcategory templates
+  - template inputs
+- Serializes categories to an envelope format with metadata and postgres seed structure
+
+### 9. credentials_store_pg.py - Credential Table Persistence
+
+Purpose:
+
+- Reads active users from credential table
+- Upserts modified users and deletes removed entries
+- Provides a clean mapping format consumed by Login.py
+
+### 10. path_policy.py and filedialog_compat.py - Runtime Resilience Utilities
+
+Purpose:
+
+- path_policy.py:
+  - centralizes shared base path resolution
+  - stores persisted paths in relative form
+  - reconstructs absolute paths safely at runtime
+- filedialog_compat.py:
+  - uses tkinter.filedialog when available
+  - falls back to Tcl/Tk dialog commands in constrained/frozen environments
 
 ---
-
-### 3. production.py - Production Rework Tool
-
-**Purpose:** Allows production team to review quality findings and implement fixes.
-
-**Key Classes:**
-
-#### ProductionTool
-- **Purpose:** Interface for production rework workflow
-
-**Key Methods:**
-
-```python
-def loadfrmhandover():
-    """Display list of items handed to production
-    
-    Shows:
-    - Cabinet ID, Project Name
-    - Number of punches
-    - Who handed over and when
-    - Allows selection to load item
-    """
-
-def loadhndovritm(item):
-    """Load a handover item and auto-open production mode
-    
-    Process:
-    1. Verify PDF and Excel files exist
-    2. Load PDF document
-    3. Load session from quality tool
-    4. Auto-open production mode dialog
-    """
-
-def prodmode():
-    """Interactive mode for reviewing and completing punches
-    
-    Workflow:
-    1. Load open (non-implemented) punches
-    2. Display each punch with quality remarks
-    3. Allow adding implementation notes
-    4. Mark punch as implemented
-    5. Auto-save session
-    6. Move to next punch
-    """
-
-def compreworkhndbck():
-    """Finalize rework and hand back to quality
-    
-    Validates:
-    - All punches marked as implemented
-    - Session auto-saved
-    - Handback record created
-    - Status updated to "being_closed_by_quality"
-    """
-
-def navtopunch(sr_no, punch_text):
-    """Highlight annotation location on current page
-    
-    Displays:
-    - Dashed box around defect location
-    - Arrow pointing to defect
-    - SR number label
-    """
-
-def syncmgrstats():
-    """Update manager dashboard with current punch counts"""
-```
-
-**Production Workflow:**
-
-```
-Load from Handover Queue
-    |
-    +-- Select Cabinet
-    |
-    +-- Load PDF, Excel, Session
-    |
-    +-- Auto-open Production Mode
-    |
-    +-- For Each Open Punch:
-    |   |
-    |   +-- Display punch details and quality remarks
-    |   |
-    |   +-- Navigate to highlighted area on PDF
-    |   |
-    |   +-- Add implementation remarks (optional)
-    |   |
-    |   +-- Mark as Implemented
-    |   |
-    |   +-- Auto-save session
-    |
-    +-- All Punches Completed
-    |
-    +-- Complete & Handback to Quality
-    |
-    +-- Auto-save session
-    |
-    +-- Return to Quality Tool for Verification
-```
-
----
-
-### 4. manager.py - Management Analytics
-
-**Purpose:** Provides managers and supervisors with project overview and analytics.
-
-**Key Classes:**
-
-#### ManagerDatabase
-- **Purpose:** Database operations for manager statistics
-
-**Key Methods:**
-
-```python
-def initializedb():
-    """Initialize manager.db with cabinet and category tables"""
-
-def punchcount(excel_path):
-    """Count punch statistics directly from Excel file
-    
-    Returns:
-        tuple: (total_punches, implemented_punches, closed_punches)
-    """
-
-def getstatsfrominterphase(excel_path):
-    """Determine cabinet status from Interphase worksheet
-    
-    Reads Interphase column D (Status) for each reference number,
-    determines highest completed reference, and assigns status:
-    - Refs 1-2: project_info_sheet
-    - Refs 3-9: mechanical_assembly
-    - Refs 10-18: component_assembly
-    - Refs 19-26: final_assembly
-    - Refs 27+: final_documentation
-    
-    Returns:
-        str: Status string or None
-    """
-
-def getallproj():
-    """Retrieve all projects with cabinet counts
-    
-    Returns:
-        list: Project dictionaries with last_updated timestamps
-    """
-
-def getcabinets(project_name):
-    """Get all cabinets in a project with real-time statistics
-    
-    Returns:
-        list: Cabinet data with punch counts and status
-    """
-
-def getcatstats(start_date=None, end_date=None, project_name=None):
-    """Retrieve defect category statistics with date and project filtering
-    
-    Args:
-        start_date (str): ISO format date (optional)
-        end_date (str): ISO format date (optional)
-        project_name (str): Filter by project (optional)
-        
-    Returns:
-        list: Category occurrences sorted by frequency
-    """
-```
-
-#### ManagerUI
-- **Purpose:** Dashboard user interface
-
-**Key Methods:**
-
-```python
-def dashboard():
-    """Display project overview with statistics cards
-    
-    Shows:
-    - Daily cabinet count
-    - Weekly cabinet count
-    - Monthly cabinet count
-    - Financial year cabinet count
-    - Project list with expandable cabinet details
-    """
-
-def analytics():
-    """Display Pareto chart with category analysis
-    
-    Features:
-    - Search by project name
-    - Date range filtering (today, month, quarter, year, custom)
-    - View by category or subcategory
-    - Filter to show only "problematic" (80% cumulative) items
-    - Interactive tooltips and legends
-    - Export to Excel
-    """
-
-def showdfctlib():
-    """Display and manage defect category definitions
-    
-    Allows:
-    - Add new defect types
-    - Edit existing categories
-    - Add subcategories
-    - Manage wiring selector categories
-    - View special subcategories
-    """
-
-def templatexcleditor():
-    """Interface for managing master Excel template
-    
-    Operations:
-    - Open current template
-    - Replace with new template
-    - Export template copy
-    - Verify template structure
-    """
-
-def exportxcl():
-    """Export analytics as formatted Excel file
-    
-    Generates workbooks with:
-    - Category analysis with Pareto ranking
-    - Problematic items flagged in red
-    - Month-wise or project-wise breakdown
-    - Percentage and cumulative percentage columns
-    """
-```
-
-**Dashboard Features:**
-
-- **Statistics Cards:** Daily, weekly, monthly, and annual cabinet counts
-- **Project Cards:** Expandable project view with cabinet details
-- **Cabinet Information:**
-  - Total punches, implemented, closed counts
-  - Current status (workflow stage)
-  - Clickable cabinet IDs to open Excel files
-- **Analytics:**
-  - Pareto chart showing defect frequency
-  - 80% cumulative threshold visualization
-  - Project and date range filtering
-  - Problematic item highlighting
-
----
-
-### 5. database_manager.py - SQLite Database Operations
-
-**Purpose:** Centralized database manager for data persistence and retrieval.
-
-**Key Classes:**
-
-#### DatabaseManager
-- **Purpose:** Handle all database operations
-
-**Key Methods:**
-
-```python
-def add_project(project_data):
-    """Add new project to database
-    
-    Args:
-        project_data (dict): Project information including:
-        - cabinet_id, project_name, sales_order_no
-        - storage_location, pdf_path, excel_path
-        
-    Returns:
-        bool: Success status
-    """
-
-def update_project(cabinet_id, updates):
-    """Update existing project information
-    
-    Args:
-        cabinet_id (str): Project identifier
-        updates (dict): Fields to update
-        
-    Returns:
-        bool: Success status
-    """
-
-def get_project(cabinet_id):
-    """Retrieve project by cabinet ID
-    
-    Returns:
-        dict: Project data or None
-    """
-
-def get_recent_projects(limit=20):
-    """Get recently accessed projects
-    
-    Returns:
-        list: Project dictionaries ordered by access time
-    """
-
-def search_projects(search_term):
-    """Search projects by name, cabinet ID, or sales order
-    
-    Returns:
-        list: Matching project dictionaries
-    """
-```
-
-**Database Schema:**
-
-The system uses multiple SQLite databases:
-
-- **inspection_tool.db** (DatabaseManager)
-  - projects: Project metadata and file paths
-  - recent_projects: Access tracking
-  - quality_handovers: Handover workflow tracking
-
-- **manager.db** (ManagerDatabase)
-  - cabinets: Cabinet statistics and workflow status
-  - category_occurrences: Defect frequency tracking
-
----
-
-### 6. handover_database.py (HandoverDB) - Workflow Management
-
-**Purpose:** Manages the Quality-Production handover workflow using JSON storage.
-
-**Key Classes:**
-
-#### HandoverDB
-- **Purpose:** Track items between Quality and Production queues
-
-**Key Methods:**
-
-```python
-def add_quality_handover(handover_data):
-    """Create new handover from Quality to Production
-    
-    Args:
-        handover_data (dict): Cabinet and punch information
-        
-    Returns:
-        bool: Success status
-    """
-
-def get_pending_production_items():
-    """Retrieve items waiting in production queue
-    
-    Returns:
-        list: Handover items in pending/in_progress status
-    """
-
-def add_production_handback(handback_data):
-    """Create handback from Production to Quality
-    
-    Marks quality handover as completed,
-    creates new production_to_quality record
-    """
-
-def get_pending_quality_items():
-    """Retrieve items waiting for quality verification
-    
-    Returns:
-        list: Items with status='pending' in production_to_quality
-    """
-
-def verify_production_item(cabinet_id, verified_by, notes, mark_as_closed):
-    """Mark production item as verified or closed
-    
-    Args:
-        cabinet_id (str): Cabinet identifier
-        verified_by (str): Verifying user
-        notes (str): Verification notes
-        mark_as_closed (bool): If True, sets to 'closed', else 'verified'
-        
-    Returns:
-        bool: Success status
-    """
-```
-
-**Handover State Machine:**
-
-```
-Quality Inspection
-    |
-    v
-add_quality_handover() --> pending_production
-    |
-    v
-Production Receives --> in_production
-    |
-    v
-Production Completes --> add_production_handback()
-    |
-    v
-pending_quality_verification
-    |
-    v
-verify_production_item() --> closed
-    |
-    v
-Cabinet Finalized
-```
-
----
-
-
 
 ## User Workflows
 
 ### Quality Inspector Workflow
 
-```
-1. Login with Quality role credentials
-   |
-2. Open PDF file for inspection
-   |
-3. Select or create project details
-   |
-4. Working directory structure created automatically
-   |
-5. For each defect found:
-   |
-   +-- Use orange highlighter to mark area
-   |
-   +-- OCR extracts text from highlighted region
-   |
-   +-- Select defect category/subcategory
-   |
-   +-- Template automatically generates punch description
-   |
-   +-- OCR text pre-fills first input field
-   |
-   +-- Log punch to Excel (auto-increment SR No)
-   |
-   +-- Update Interphase status for reference
-   |
-   +-- Annotation saved with metadata
-   |
-6. Review checklist items (Interphase sheet)
-   |
-   +-- Mark each reference as OK/NOK/N/A
-   |
-   +-- Add remarks for N/A items
-   |
-7. Handover to production
-   |
-   +-- Session auto-saved
-   |
-   +-- Handover record created
-   |
-8. Monitor production handback
-   |
-   +-- Load returned item for verification
-   |
-   +-- Review punch closing marks
-   |
-   +-- Add quality remarks
-   |
-   +-- Mark punches as closed
-   |
-   +-- Auto-finalize when complete
+```text
+1. Login as Quality
+2. Load drawing PDF
+3. Resolve or create project/cabinet context
+4. Annotate defects with highlighter/pen/text tools
+5. Use OCR-assisted category/template flow to generate punch descriptions
+6. Write punch entries into Punch Sheet and update Interphase progress
+7. Save session and optionally export annotated PDF
+8. Handover cabinet to production queue
+9. Receive handback and verify closure when returned
 ```
 
 ### Production Team Workflow
 
-```
-1. Login with Production role credentials
-   |
-2. View pending handover queue
-   |
-   +-- Display cabinets handed to production
-   |
-3. Select cabinet to rework
-   |
-   +-- Load PDF, Excel, and session
-   |
-   +-- Auto-open production mode
-   |
-4. For each open punch:
-   |
-   +-- Display punch description
-   |
-   +-- Navigate to annotated location on PDF
-   |
-   +-- Review quality remarks
-   |
-   +-- Add implementation notes
-   |
-   +-- Mark as implemented
-   |
-5. Complete all punch implementations
-   |
-   +-- Auto-save session
-   |
-   +-- Return to quality for verification
+```text
+1. Login as Production
+2. Open pending items from production queue
+3. Load PDF + session + workbook for selected cabinet
+4. Navigate to each open punch location
+5. Record implementation details and mark implemented rows
+6. Complete rework and hand back to quality
+7. Trigger manager sync updates throughout progression
 ```
 
 ### Manager Workflow
 
+```text
+1. Login as Manager
+2. View dashboard cards and project summaries
+3. Drill into cabinets and read live punch metrics from Excel
+4. Open analytics to inspect category/subcategory Pareto trends
+5. Filter by date range or project as required
+6. Maintain defect library and template configuration paths
+7. Export analysis reports for stakeholders
 ```
-1. Login with Manager role credentials
-   |
-2. Access Manager Dashboard
-   |
-   +-- View project overview
-   |
-   +-- Statistics cards (daily, weekly, monthly, yearly)
-   |
-   +-- Expandable project list with cabinets
-   |
-3. Perform analytics
-   |
-   +-- View Pareto chart of defects
-   |
-   +-- Filter by project, date range
-   |
-   +-- Identify problematic (80% cumulative) categories
-   |
-   +-- Export to Excel for reporting
-   |
-4. Manage defect library
-   |
-   +-- Add/edit defect categories
-   |
-   +-- Configure subcategories
-   |
-   +-- Set up wiring selector types
-   |
-5. Manage template
-   |
-   +-- Review template structure
-   |
-   +-- Replace with new template
-   |
-   +-- Export template copies
+
+### Admin Workflow
+
+```text
+1. Login as Admin
+2. Open AdminPanel
+3. Add/edit/deactivate users through dialog actions
+4. Persist updates back to PostgreSQL credential storage
 ```
 
 ---
 
 ## Key Features
 
-### 1. PDF Annotation System
+### 1. Drawing Annotation and Punch Capture
 
-- **Highlighter Tool:** Color-coded highlighting with three colors
-  - Orange: Defects requiring action (supports OCR)
-  - Green: Approved/resolved items
-  - Yellow: General markup and notes
+- Multi-color highlighter semantics for defect states
+- Pen and text overlays for visual context and instructions
+- Coordinate conversion utilities for zoom-accurate drawing placement
+- Undo stack and session-safe persistence
 
-- **Pen Tool:** Freehand drawing for additional marks
+### 2. OCR-Assisted Description Building
 
-- **Text Tool:** Add text annotations with timestamps
+- OCR extraction from highlighted regions
+- Tesseract path auto-detection with environment variable support
+- Template-driven defect description generation using captured text
 
-- **Coordinate System:** Automatic scaling for zoom and pan
+### 3. Excel-Driven Execution Model
 
-### 2. Optical Character Recognition (OCR)
+- Punch Sheet and Interphase worksheet integration
+- Merged-cell-safe read/write helpers
+- Auto-increment style punch progression and lifecycle timestamps
 
-- **Automatic Text Extraction:** Extracts text from orange-highlighted regions
-- **Multi-Orientation Support:** Handles text at 0°, 90°, 180°, 270°
-- **Confidence Scoring:** Uses Tesseract confidence metrics
-- **Validation:** Ensures extracted text is all capitals
-- **Pre-fill Capability:** OCR text automatically pre-fills first template input
+### 4. Quality-Production Queue Lifecycle
 
-### 3. Excel Integration
+- Quality handover queue with pending/in_progress/completed states
+- Production handback queue with pending/verified/closed outcomes
+- Verification notes and rework queue controls for exception handling
 
-- **Punch Sheet Management:** Automatic row insertion and numbering
-- **Interphase Tracking:** Reference-based status management
-- **Auto-increment:** SR numbers automatically assigned
-- **Timestamp Tracking:** Records when checks, implementations, and closes occurred
-- **Merged Cell Handling:** Properly reads project details from merged cells
+### 5. Management Analytics and Pareto Reporting
 
-### 4. Workflow Management
+- Category occurrence aggregation for root-cause concentration analysis
+- Time-windowed cabinet productivity visibility
+- Filterable project-level reporting surfaces
 
-- **Quality to Production Handover:** Tracks items handed for rework
-- **Production to Quality Handback:** Monitors returned items
-- **Status Tracking:** Workflow-based status updates
-- **Audit Trail:** Complete history of all transitions
+### 6. Frozen-Build and Path Compatibility
 
-### 5. Analytics & Reporting
-
-- **Pareto Analysis:** Identifies defect categories causing 80% of issues
-- **Category Statistics:** Tracks defect frequency by category
-- **Project Filtering:** Analyze by specific project
-- **Date Range Filtering:** Daily, weekly, monthly, quarterly, yearly views
-- **Export to Excel:** Formatted reports with color-coding and formulas
-
-### 6. Session Management
-
-- **Auto-save:** Periodic automatic session saving
-- **Session Recovery:** Load previous inspection sessions
-- **Portable Sessions:** JSON-based for easy sharing
-- **Complete Annotation Serialization:** All mark types preserved
+- _MEIPASS-aware resource and module lookup
+- Relative path persistence and policy-validated reconstruction
+- Dialog fallback path for constrained Tk environments
 
 ---
 
 ## API Reference
 
-### Key Function Signatures
-
-#### User Authentication
+Representative function signatures and integration points:
 
 ```python
-def load_credentials() -> dict
-    """Load user credentials from JSON file"""
+# Login and routing
+load_credentials() -> dict
+save_credentials(credentials: dict) -> None
+authenticate_user(username: str, password: str, credentials: dict) -> tuple
+route_to_role(username: str, full_name: str, role: str) -> None
+dispatch_from_args() -> bool
 
-def authenticate_user(username: str, password: str, credentials: dict) -> tuple
-    """Validate credentials, return (role, full_name) or (None, None)"""
+# Database manager
+DatabaseManager.add_project(project_data: dict) -> bool
+DatabaseManager.update_project(cabinet_id: str, updates: dict) -> bool
+DatabaseManager.get_project(cabinet_id: str) -> dict | None
+DatabaseManager.get_recent_projects(limit: int = 20) -> list[dict]
 
-def route_to_role(username: str, full_name: str, role: str) -> None
-    """Launch appropriate module based on role"""
-```
+# Handover queues
+HandoverDB.add_quality_handover(handover_data: dict) -> bool
+HandoverDB.get_pending_production_items() -> list[dict]
+HandoverDB.add_production_handback(handback_data: dict) -> bool
+HandoverDB.get_pending_quality_items() -> list[dict]
+HandoverDB.verify_production_item(...) -> bool
 
-#### PDF and Annotation
+# Category and credentials persistence
+load_categories_from_postgres(db_key: str = "inspection_tool") -> list[dict]
+save_categories_to_postgres(categories: list[dict], db_key: str = "inspection_tool") -> None
+load_users_from_postgres(db_key: str = "inspection_tool") -> dict
+save_users_to_postgres(users: dict, db_key: str = "inspection_tool") -> None
 
-```python
-def display() -> None
-    """Render current page with all annotations"""
-
-def savesession() -> None
-    """Serialize annotations to JSON file"""
-
-def loadfrompath(path: str) -> None
-    """Deserialize annotations from JSON file"""
-
-def exportpdf() -> None
-    """Create PDF with all annotations embedded"""
-```
-
-#### Excel Operations
-
-```python
-def readcell(ws: Worksheet, row: int, col: str) -> Any
-    """Read cell value handling merged cells"""
-
-def writecell(ws: Worksheet, row: int, col: str, value: Any) -> None
-    """Write cell value handling merged cells"""
-
-def getnextsr() -> int
-    """Get next serial number for punch"""
-```
-
-#### OCR and Extraction
-
-```python
-def exctracttxt(annotation: dict) -> str
-    """Extract text from highlight using OCR"""
-
-def extracttext(pdf_path: str, page_number: int) -> str
-    """Extract all text from PDF page using OCR"""
-```
-
-#### Database Operations
-
-```python
-def add_project(project_data: dict) -> bool
-    """Add project to database"""
-
-def update_project(cabinet_id: str, updates: dict) -> bool
-    """Update project information"""
-
-def get_project(cabinet_id: str) -> dict
-    """Retrieve project by cabinet ID"""
-
-def get_recent_projects(limit: int = 20) -> list
-    """Get recently accessed projects"""
-```
-
-#### Handover Management
-
-```python
-def add_quality_handover(handover_data: dict) -> bool
-    """Create Quality to Production handover"""
-
-def get_pending_production_items() -> list
-    """Get items in production queue"""
-
-def add_production_handback(handback_data: dict) -> bool
-    """Create Production to Quality handback"""
-
-def verify_production_item(cabinet_id: str, verified_by: str, notes: str) -> bool
-    """Mark production item as verified"""
+# Path policy helpers
+get_base_path(force_refresh: bool = False) -> str
+to_relative_path(path: str | None) -> str | None
+to_absolute_path(path: str | None) -> str | None
+resolve_storage_location(stored_value: str | None) -> str
 ```
 
 ---
 
-
 ## Performance Considerations
 
-- **Large PDFs:** Zoom level affects rendering performance. Use 1.0 zoom for fastest response.
-- **OCR Processing:** Text extraction adds 2-5 seconds per highlight. Reduce image upscaling for faster processing.
-- **Database Queries:** Use indexed columns for faster lookups (cabinet_id, status).
-- **File Storage:** Store projects on local fast storage, not network drives.
+- PDF rendering cost scales with page complexity and zoom level
+- OCR is CPU intensive; batch/high-frequency extraction can increase latency
+- openpyxl workbook operations can be slow on very large punch sheets
+- manager dashboard currently recalculates live punch counts from Excel for accuracy; this favors consistency over raw speed
+- network-path latency can impact storage and workbook access when base_path points to remote shares
 
 ---
 
 ## Security Notes
 
-- Credentials stored in JSON (not encrypted). Use environment variables in production.
-- No authentication between production and quality tools. Use network security.
-- Session files contain all annotation data. Control access to storage locations.
+- pg_sqlite_compat.py currently includes fixed PostgreSQL host/user/password values in code; move these to secure runtime secrets for production
+- credentials are managed in database tables; enforce strong password policy and role governance externally
+- audit-sensitive session and workbook files should be stored on controlled-access storage
+- apply least-privilege database roles for runtime users
 
 ---
 
 ## Future Enhancements
 
-- Database encryption for credentials
-- Exclusive database management
-- Multi-user concurrent access with locking
-- Cloud storage integration
-- Real-time notifications for handovers
-- Advanced analytics and ML-based defect prediction
+- remove hardcoded database connection values in favor of environment-backed secret management
+- introduce role action auditing with immutable event logs
+- add optimistic locking or transactional safeguards for concurrent workbook edits
+- provide background OCR workers for smoother UI responsiveness
+- expand manager analytics with trend decomposition and first-pass-yield views
+- improve packaging docs for frozen deployments including required external assets
 
-**Document Version:** 1.0.0  
-**Last Updated:** January 7, 2026  
-**Maintained By:** Kshitij Palshikar
+---
 
+## Document Metadata
+
+Document Version: 2.0.0
+Last Updated: April 21, 2026
+Maintained By: Inspectron1 Contributors
