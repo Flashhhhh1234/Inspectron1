@@ -2820,7 +2820,7 @@ class CircuitInspector:
         )
         if file_path:
             try:
-                # Temporarily hold source path so OCR-assisted project dialog can read it.
+                # Temporarily hold source path before project details are collected.
                 self.current_pdf_path = file_path
                 self.askprojdetails()
 
@@ -2990,117 +2990,8 @@ class CircuitInspector:
         return ws.cell(row=target_row, column=target_col).value
 
 
-    
-    def extracttext(self, pdf_path, page_number):
-        """Extract text from a specific page using OCR"""
-        try:
-            doc = fitz.open(pdf_path)
-            if page_number >= len(doc):
-                return ""
-            
-            page = doc[page_number]
-            
-            # Convert page to image
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
-            img_data = pix.tobytes("png")
-            img = Image.open(io.BytesIO(img_data))
-            
-            # Perform OCR
-            text = pytesseract.image_to_string(img)
-            doc.close()
-            
-            return text
-        except Exception as e:
-            print(f"OCR Error: {e}")
-            return ""
-
-    def extractcabnum(self, text):
-        """Extract cabinet number from text"""
-        # Try multiple patterns to find cabinet number
-        patterns = [
-            # Match "CABINET NUMBER :-" followed by value (possibly on next line)
-            r'CABINET\s+NUMBER\s*:-\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet Number :-" followed by value
-            r'Cabinet\s+Number\s*:-\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet Number -:" followed by value
-            r'Cabinet\s+Number\s*[-:]+\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet Number:" with value
-            r'Cabinet\s+Number\s*:\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet Number" followed by value
-            r'Cabinet\s+Number\s+([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet #" with value
-            r'Cabinet\s*#\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-            # Match "Cabinet ID" with value
-            r'Cabinet\s+ID\s*[-:]?\s*\n?\s*([A-Z0-9][A-Z0-9-]*)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                cabinet_num = match.group(1).strip()
-                # Ignore if it's just a dash or empty
-                if cabinet_num and cabinet_num != '-' and len(cabinet_num) > 1:
-                    print(f"Found Cabinet Number: {cabinet_num}")
-                    return cabinet_num
-        
-        # Alternative: Look for the line after "Cabinet Number" or "CABINET NUMBER"
-        lines = text.split('\n')
-        for i, line in enumerate(lines):
-            if re.search(r'CABINET\s+NUMBER|Cabinet\s+Number', line, re.IGNORECASE):
-                # Check current line for value after ":-" or similar delimiters
-                parts = re.split(r':-|[-:]', line)
-                if len(parts) > 1:
-                    value = parts[-1].strip()
-                    if value and len(value) > 1 and value != '-':
-                        print(f"Found Cabinet Number (same line): {value}")
-                        return value
-                # Check next line
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if next_line and len(next_line) > 1 and next_line != '-':
-                        print(f"Found Cabinet Number (next line): {next_line}")
-                        return next_line
-        
-        print("No Cabinet Number found in text")
-        return ""
-
-
-    def extractprojectnames(self, text):
-        """Extract all potential project names from text"""
-        # Split text into lines and clean them
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        
-        # Filter out very short lines and common headers
-        excluded_words = ['page', 'cabinet', 'number', 'date', 'project', 'name', 'description']
-        project_names = []
-        
-        for line in lines:
-            # Skip lines that are too short or too long
-            if len(line) < 3 or len(line) > 100:
-                continue
-            # Skip lines that contain only numbers or special characters
-            if not any(c.isalpha() for c in line):
-                continue
-            # Skip lines with common excluded words as the only content
-            if line.lower() in excluded_words:
-                continue
-            
-            project_names.append(line)
-        
-        return project_names
-
     def askprojdetails(self):
         """Ask for project details while enforcing central storage policy."""
-        
-        # Extract OCR data from third page (index 2) if PDF is loaded
-        ocr_text = ""
-        cabinet_from_ocr = ""
-        project_names_from_ocr = []
-        
-        if hasattr(self, 'current_pdf_path') and self.current_pdf_path:
-            ocr_text = self.extracttext(self.current_pdf_path, 2)  # Page 3 (index 2)
-            cabinet_from_ocr = self.extractcabnum(ocr_text)
-            project_names_from_ocr = self.extractprojectnames(ocr_text)
         
         dlg = tk.Toplevel(self.root)
         dlg.title("Project Details")
@@ -3110,30 +3001,15 @@ class CircuitInspector:
 
         # Cabinet ID
         tk.Label(dlg, text="Cabinet ID", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(15, 0))
-        cabinet_var = tk.StringVar(value=cabinet_from_ocr or getattr(self, "cabinet_id", ""))
+        cabinet_var = tk.StringVar(value=getattr(self, "cabinet_id", ""))
         cabinet_entry = tk.Entry(dlg, textvariable=cabinet_var, font=('Segoe UI', 10))
         cabinet_entry.pack(fill="x", padx=20)
-        
-        # Highlight if auto-filled
-        if cabinet_from_ocr:
-            cabinet_entry.config(bg='#dcfce7')  # Light green
-            dlg.after(2000, lambda: cabinet_entry.config(bg='white'))
 
-        # Project Name (Dropdown/Combobox)
+        # Project Name
         tk.Label(dlg, text="Project Name", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(10, 0))
         
         project_var = tk.StringVar(value=getattr(self, 'project_name', ''))
-        
-        # Use Combobox for dropdown
-        project_combo = ttk.Combobox(dlg, textvariable=project_var, font=('Segoe UI', 10))
-        project_combo['values'] = project_names_from_ocr if project_names_from_ocr else []
-        project_combo.pack(fill="x", padx=20)
-        
-        # Auto-select first item if available and no existing value
-        if project_names_from_ocr and not project_var.get():
-            project_combo.current(0)
-            project_combo.config(background='#dcfce7')  # Light green
-            dlg.after(2000, lambda: project_combo.config(background='white'))
+        tk.Entry(dlg, textvariable=project_var, font=('Segoe UI', 10)).pack(fill="x", padx=20)
 
         # Sales Order Number
         tk.Label(dlg, text="Sales Order Number", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(10, 0))

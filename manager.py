@@ -435,16 +435,16 @@ class ManagerDatabase:
         params = []
         
         if start_date:
-            query += ' AND occurrence_date >= ?'
+            query += ' AND DATE(occurrence_date) >= DATE(?)'
             params.append(start_date)
         
         if end_date:
-            query += ' AND occurrence_date <= ?'
+            query += ' AND DATE(occurrence_date) <= DATE(?)'
             params.append(end_date)
         
         if project_name:
-            query += ' AND project_name = ?'
-            params.append(project_name)
+            query += ' AND LOWER(project_name) LIKE ?'
+            params.append(f'%{project_name.lower()}%')
         
         query += ' GROUP BY category, subcategory ORDER BY count DESC'
         cursor.execute(query, params)
@@ -483,6 +483,14 @@ class ManagerUI:
         self.category_file = os.path.join(os.path.dirname(base_dir), "assets", "categories.json")
         self.template_excel_file = os.path.join(base_dir, "Emerson.xlsx")
         self.categories = self.loadcat()
+        self._dashboard_search_after = None
+        self._dashboard_search_cache = []
+        self._dashboard_cabinet_cache = {}
+        self._dashboard_project_signature = None
+        self._analytics_filter_after = None
+        self._analytics_chart_canvas = None
+        self._analytics_chart_figure = None
+        self._analytics_placeholder = "Search projects or select filters..."
         
         self.uisetup()
         self.dashboard()
@@ -589,13 +597,18 @@ class ManagerUI:
         """
         self.activenav('dashboard')
         self.clearcont()
+        self._dashboard_cabinet_cache = {}
+        self._dashboard_project_signature = None
+        if self._dashboard_search_after:
+            self.root.after_cancel(self._dashboard_search_after)
+            self._dashboard_search_after = None
         
         # Centered container with 70% width
-        center_container = tk.Frame(self.content, bg='#f8fafc')
+        center_container = tk.Frame(self.content, bg='#eef2f7')
         center_container.place(relx=0.5, rely=0, anchor='n', relwidth=0.7, relheight=1.0)
         
         # Statistics Cards at the top
-        stats_frame = tk.Frame(center_container, bg='#f8fafc')
+        stats_frame = tk.Frame(center_container, bg='#eef2f7')
         stats_frame.pack(fill=tk.X, padx=30, pady=(20, 10))
         
         stats = self.db.cabinetstats()
@@ -610,7 +623,8 @@ class ManagerUI:
         ]
         
         for label, count, color in stat_cards:
-            card = tk.Frame(stats_frame, bg='white', relief=tk.SOLID, borderwidth=1)
+            card = tk.Frame(stats_frame, bg='white', relief=tk.FLAT, highlightthickness=1,
+                    highlightbackground='#dbe3ef')
             card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
             
             tk.Label(card, text=label, font=('Segoe UI', 11, 'bold'), 
@@ -619,30 +633,39 @@ class ManagerUI:
                     bg='white', fg=color).pack(pady=(0, 5))
             tk.Label(card, text="Cabinets", font=('Segoe UI', 9),
                     bg='white', fg='#94a3b8').pack(pady=(0, 15))
-        
-        
-        
-        projects = self.db.getallproj()
-        
+
+        self._dashboard_search_cache = self.db.getallproj()
+        projects = list(self._dashboard_search_cache)
+
         if not projects:
-            empty_container = tk.Frame(center_container, bg='#f8fafc')
+            empty_container = tk.Frame(center_container, bg='#eef2f7')
             empty_container.pack(expand=True, fill=tk.BOTH)
-            center_frame = tk.Frame(empty_container, bg='#f8fafc')
+            center_frame = tk.Frame(empty_container, bg='#eef2f7')
             center_frame.place(relx=0.5, rely=0.5, anchor='center')
-            
-            tk.Label(center_frame, text="No projects found", 
-                    font=('Segoe UI', 16, 'bold'), fg='#1e293b', bg='#f8fafc').pack(pady=10)
-            tk.Label(center_frame, text="Projects will appear here once Quality Inspection tool syncs data.",
-                    font=('Segoe UI', 11), fg='#64748b', bg='#f8fafc').pack(pady=5)
+
+            tk.Label(
+                center_frame,
+                text="No projects found",
+                font=('Segoe UI', 16, 'bold'),
+                fg='#1e293b',
+                bg='#eef2f7'
+            ).pack(pady=10)
+            tk.Label(
+                center_frame,
+                text="Projects will appear here once Quality Inspection tool syncs data.",
+                font=('Segoe UI', 11),
+                fg='#64748b',
+                bg='#eef2f7'
+            ).pack(pady=5)
             return
         
         # Scrollable container
-        canvas_container = tk.Frame(center_container, bg='#f8fafc')
+        canvas_container = tk.Frame(center_container, bg='#eef2f7')
         canvas_container.pack(expand=True, fill=tk.BOTH, padx=30, pady=(0, 20))
         
-        canvas = tk.Canvas(canvas_container, bg='#f8fafc', highlightthickness=0)
+        canvas = tk.Canvas(canvas_container, bg='#eef2f7', highlightthickness=0)
         scrollbar = tk.Scrollbar(canvas_container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas, bg='#f8fafc')
+        scroll_frame = tk.Frame(canvas, bg='#eef2f7')
         
         def on_frame_configure(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -677,45 +700,57 @@ class ManagerUI:
         canvas.bind("<Destroy>", _unbind_mousewheel)
         
         # Header with search bar
-        header = tk.Frame(center_container, bg='#f8fafc')
-        header.pack(fill=tk.X, padx=30, pady=(10, 10))
-        header.pack_forget()
+        header = tk.Frame(center_container, bg='#eef2f7')
         header.pack(fill=tk.X, padx=30, pady=(10, 10), before=canvas_container)
         
         tk.Label(header, text="Projects Overview", font=('Segoe UI', 16, 'bold'),
-                bg='#f8fafc').pack(side=tk.LEFT)
+                bg='#eef2f7', fg='#0f172a').pack(side=tk.LEFT)
         
         # Search bar on the right
-        search_frame = tk.Frame(header, bg='white', relief=tk.SOLID, borderwidth=1)
+        search_frame = tk.Frame(header, bg='white', relief=tk.FLAT, highlightthickness=1,
+                                highlightbackground='#cfd8e5')
         search_frame.pack(side=tk.RIGHT, padx=10)
         
-        tk.Label(search_frame, text="🔍", bg='white', font=('Segoe UI', 12)).pack(side=tk.LEFT, padx=(10, 5))
+        tk.Label(search_frame, text="🔍", bg='white', fg='#64748b',
+                 font=('Segoe UI', 11)).pack(side=tk.LEFT, padx=(10, 5))
         
+        placeholder = "Search projects..."
         search_var = tk.StringVar()
         search_entry = tk.Entry(search_frame, textvariable=search_var, width=30,
-                               font=('Segoe UI', 10), relief=tk.FLAT, bg='white')
+                               font=('Segoe UI', 10), relief=tk.FLAT, bg='white',
+                               fg='#0f172a', insertbackground='#0f172a')
         search_entry.pack(side=tk.LEFT, padx=(0, 10), pady=8)
+
+        def run_dashboard_search():
+            search_term = search_var.get().strip()
+            if not search_term or search_term == placeholder:
+                filtered_projects = self._dashboard_search_cache
+            else:
+                term = search_term.lower()
+                filtered_projects = [
+                    p for p in self._dashboard_search_cache
+                    if term in (p.get('project_name') or '').lower()
+                ]
+            self.updtprojlist(scroll_frame, filtered_projects)
+            self._dashboard_search_after = None
         
         def on_search(*args):
-            search_term = search_var.get().strip()
-            if search_term and search_term != "Search projects...":
-                filtered_projects = self.db.searchproj(search_term)
-            else:
-                filtered_projects = self.db.getallproj()
-            self.updtprojlist(scroll_frame, filtered_projects)
+            if self._dashboard_search_after:
+                self.root.after_cancel(self._dashboard_search_after)
+            self._dashboard_search_after = self.root.after(180, run_dashboard_search)
         
         search_var.trace_add('write', on_search)
-        search_entry.insert(0, "Search projects...")
+        search_entry.insert(0, placeholder)
         search_entry.config(fg='#94a3b8')
         
         def on_focus_in(event):
-            if search_entry.get() == "Search projects...":
+            if search_entry.get() == placeholder:
                 search_entry.delete(0, tk.END)
                 search_entry.config(fg='#1e293b')
         
         def on_focus_out(event):
             if not search_entry.get():
-                search_entry.insert(0, "Search projects...")
+                search_entry.insert(0, placeholder)
                 search_entry.config(fg='#94a3b8')
         
         search_entry.bind("<FocusIn>", on_focus_in)
@@ -731,12 +766,17 @@ class ManagerUI:
 
         Called after searches or data updates.
         """
+        signature = tuple((p.get('project_name'), p.get('cabinet_count')) for p in projects)
+        if signature == self._dashboard_project_signature and scroll_frame.winfo_children():
+            return
+        self._dashboard_project_signature = signature
+
         for w in scroll_frame.winfo_children():
             w.destroy()
         
         if not projects:
             tk.Label(scroll_frame, text="No matching projects found",
-                    font=('Segoe UI', 12), fg='#64748b', bg='#f8fafc').pack(pady=50)
+                    font=('Segoe UI', 12), fg='#64748b', bg='#eef2f7').pack(pady=50)
             return
         
         for proj in projects:
@@ -748,36 +788,40 @@ class ManagerUI:
     
         Expands to show cabinet-level information on click.
         """
-        card = tk.Frame(parent, bg='white', relief=tk.SOLID, borderwidth=1)
+        card = tk.Frame(parent, bg='white', relief=tk.FLAT, highlightthickness=1,
+                        highlightbackground='#d7e0ec')
         card.pack(fill=tk.X, pady=10, padx=5)
         
-        header = tk.Frame(card, bg='#eff6ff', cursor='hand2')
+        header = tk.Frame(card, bg='#edf2ff', cursor='hand2')
         header.pack(fill=tk.X)
         
         expand_var = tk.BooleanVar(value=False)
+        loaded_var = tk.BooleanVar(value=False)
         
-        indicator = tk.Label(header, text="▶", font=('Segoe UI', 12, 'bold'),
-                           bg='#eff6ff', fg='#3b82f6', width=3)
+        indicator = tk.Label(header, text="▸", font=('Segoe UI', 13, 'bold'),
+                           bg='#edf2ff', fg='#2563eb', width=3)
         indicator.pack(side=tk.LEFT)
         
         tk.Label(header, text=project['project_name'], font=('Segoe UI', 13, 'bold'),
-                bg='#eff6ff').pack(side=tk.LEFT, pady=15, padx=10)
+                bg='#edf2ff', fg='#0f172a').pack(side=tk.LEFT, pady=15, padx=10)
         
         # Cabinet count on the right
         tk.Label(header, text=f"📦 {project['cabinet_count']} Cabinet(s)",
-                font=('Segoe UI', 11, 'bold'), bg='#eff6ff', fg='#3b82f6').pack(side=tk.RIGHT, padx=20)
+                font=('Segoe UI', 10, 'bold'), bg='#edf2ff', fg='#2563eb').pack(side=tk.RIGHT, padx=20)
         
         dropdown = tk.Frame(card, bg='white')
         
         def toggle():
             if expand_var.get():
                 dropdown.pack_forget()
-                indicator.config(text="▶")
+                indicator.config(text="▸")
                 expand_var.set(False)
             else:
-                self.fillcabinets(dropdown, project['project_name'])
+                if not loaded_var.get():
+                    self.fillcabinets(dropdown, project['project_name'])
+                    loaded_var.set(True)
                 dropdown.pack(fill=tk.BOTH, padx=15, pady=10)
-                indicator.config(text="▼")
+                indicator.config(text="▾")
                 expand_var.set(True)
         
         header.bind("<Button-1>", lambda e: toggle())
@@ -792,14 +836,18 @@ class ManagerUI:
         for w in parent.winfo_children():
             w.destroy()
         
-        cabinets = self.db.getcabinets(project_name)
+        if project_name in self._dashboard_cabinet_cache:
+            cabinets = self._dashboard_cabinet_cache[project_name]
+        else:
+            cabinets = self.db.getcabinets(project_name)
+            self._dashboard_cabinet_cache[project_name] = cabinets
         
         if not cabinets:
             tk.Label(parent, text="No cabinets", bg='white').pack(pady=20)
             return
         
         # Header - REMOVED Drawing % and Debug columns
-        hdr = tk.Frame(parent, bg='#f1f5f9')
+        hdr = tk.Frame(parent, bg='#f3f7fd')
         hdr.pack(fill=tk.X, pady=5)
         
         headers = [
@@ -809,7 +857,19 @@ class ManagerUI:
         
         for text, w in headers:
             tk.Label(hdr, text=text, font=('Segoe UI', 9, 'bold'),
-                    bg='#f1f5f9', width=w, anchor='w').pack(side=tk.LEFT, padx=3)
+                    bg='#f3f7fd', fg='#334155', width=w, anchor='w').pack(side=tk.LEFT, padx=3)
+
+        status_map = {
+            'project_info_sheet': (' Project Info Sheet', '#3b82f6'),
+            'mechanical_assembly': (' Mechanical Assembly', '#8b5cf6'),
+            'component_assembly': (' Component Assembly', '#f59e0b'),
+            'final_assembly': (' Final Assembly', '#10b981'),
+            'final_documentation': (' Final Documentation', '#64748b'),
+            'handed_to_production': (' Handed to Production', '#8b5cf6'),
+            'in_progress': ('Production Rework', '#f59e0b'),
+            'being_closed_by_quality': (' Being Closed', '#10b981'),
+            'closed': ('✓ Closed', '#64748b')
+        }
         
         # Rows
         for cab in cabinets:
@@ -820,10 +880,6 @@ class ManagerUI:
             cabinet_label = tk.Label(row, text=cab['cabinet_id'], font=('Segoe UI', 9, 'bold'),
                     bg='white', fg='#3b82f6', width=20, anchor='w', cursor='hand2')
             cabinet_label.pack(side=tk.LEFT, padx=3)
-            
-            # Make it clickable to open Excel
-            def open_excel(excel_path=cab.get('excel_path')):
-                self.opnxcl(excel_path)
             
             cabinet_label.bind('<Button-1>', lambda e, ep=cab.get('excel_path'): self.opnxcl(ep))
             
@@ -851,19 +907,6 @@ class ManagerUI:
             tk.Label(row, text=str(cab['closed_punches']), font=('Segoe UI', 9),
                     bg='white', width=10, anchor='center').pack(side=tk.LEFT, padx=3)
             
-            # Status - UPDATED status map
-            status_map = {
-                'project_info_sheet': (' Project Info Sheet', '#3b82f6'),
-                'mechanical_assembly': (' Mechanical Assembly', '#8b5cf6'),
-                'component_assembly': (' Component Assembly', '#f59e0b'),
-                'final_assembly': (' Final Assembly', '#10b981'),
-                'final_documentation': (' Final Documentation', '#64748b'),
-                'handed_to_production': (' Handed to Production', '#8b5cf6'),
-                'in_progress': ('Production Rework', '#f59e0b'),
-                'being_closed_by_quality': (' Being Closed', '#10b981'),
-                'closed': ('✓ Closed', '#64748b')
-            }
-            
             status_text, status_color = status_map.get(
                 cab['status'],
                 (cab['status'].replace('_', ' ').title(), '#64748b')
@@ -888,40 +931,61 @@ class ManagerUI:
         """
         self.activenav('analytics')
         self.clearcont()
+        if self._analytics_filter_after:
+            self.root.after_cancel(self._analytics_filter_after)
+            self._analytics_filter_after = None
         
         # Header
         header = tk.Frame(self.content, bg='#f8fafc')
         header.pack(fill=tk.X, padx=30, pady=(20, 10))
         
         tk.Label(header, text="Category Analytics", font=('Segoe UI', 16, 'bold'),
-                bg='#f8fafc').pack(side=tk.LEFT)
+             bg='#f8fafc', fg='#0f172a').pack(side=tk.LEFT)
+        tk.Label(header, text="Live Pareto view with fast project/date filtering",
+             font=('Segoe UI', 10), bg='#f8fafc', fg='#64748b').pack(side=tk.LEFT, padx=12, pady=(4, 0))
         
         # Integrated Search Bar with Filters
-        search_control_frame = tk.Frame(self.content, bg='white', relief=tk.SOLID, borderwidth=1)
+        search_control_frame = tk.Frame(self.content, bg='white', relief=tk.FLAT,
+                                        highlightthickness=1, highlightbackground='#d7e0ec')
         search_control_frame.pack(fill=tk.X, padx=30, pady=(0, 10))
         
         # Main search bar
         search_bar_frame = tk.Frame(search_control_frame, bg='white')
         search_bar_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
         
-        tk.Label(search_bar_frame, text="🔍", bg='white', 
-                font=('Segoe UI', 14)).pack(side=tk.LEFT, padx=(5, 10))
+        tk.Label(search_bar_frame, text="🔍", bg='white', fg='#64748b',
+             font=('Segoe UI', 13)).pack(side=tk.LEFT, padx=(5, 10))
         
-        search_var = tk.StringVar()
+        placeholder = self._analytics_placeholder
+        search_var = tk.StringVar(value=placeholder)
         search_entry = tk.Entry(search_bar_frame, textvariable=search_var, width=50,
-                               font=('Segoe UI', 11), relief=tk.FLAT, bg='#f8fafc')
+                               font=('Segoe UI', 11), relief=tk.FLAT, bg='#f8fafc',
+                               fg='#94a3b8', insertbackground='#0f172a')
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(0, 10))
         
         # Suggestion dropdown
-        suggestion_frame = tk.Frame(search_control_frame, bg='white')
+        suggestion_frame = tk.Frame(search_control_frame, bg='white', relief=tk.FLAT,
+                                    highlightthickness=1, highlightbackground='#e2e8f0')
         suggestion_listbox = tk.Listbox(suggestion_frame, height=5, font=('Segoe UI', 10),
-                                       relief=tk.FLAT, bg='#f8fafc', borderwidth=0)
+                                        relief=tk.FLAT, bg='#f8fafc', borderwidth=0,
+                                        selectbackground='#dbeafe', selectforeground='#1e3a8a')
         
         all_projects = self.db.allprojnames()
+        filter_status_var = tk.StringVar(value="Filters auto-apply while typing.")
+
+        def get_project_filter():
+            value = search_var.get().strip()
+            if not value or value == placeholder:
+                return None
+            return value
+
+        def schedule_filter_apply(delay_ms=220):
+            if self._analytics_filter_after:
+                self.root.after_cancel(self._analytics_filter_after)
+            self._analytics_filter_after = self.root.after(delay_ms, apply_filters)
         
         def update_suggestions(*args):
-            
-            search_text = search_var.get().lower()
+            search_text = (get_project_filter() or "").lower()
             suggestion_listbox.delete(0, tk.END)
             
             if search_text:
@@ -934,6 +998,8 @@ class ManagerUI:
                     suggestion_frame.pack_forget()
             else:
                 suggestion_frame.pack_forget()
+
+            schedule_filter_apply(220)
         
         def select_suggestion(event):
             if suggestion_listbox.curselection():
@@ -942,7 +1008,6 @@ class ManagerUI:
                 suggestion_frame.pack_forget()
                 apply_filters()
         
-        search_var.trace_add('write', update_suggestions)
         suggestion_listbox.pack(fill=tk.X, padx=10, pady=5)
         suggestion_listbox.bind('<<ListboxSelect>>', select_suggestion)
         
@@ -950,8 +1015,8 @@ class ManagerUI:
         filter_frame = tk.Frame(search_control_frame, bg='white')
         filter_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
         
-        tk.Label(filter_frame, text="Filter by:", font=('Segoe UI', 10, 'bold'),
-                bg='white').pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(filter_frame, text="Date:", font=('Segoe UI', 10, 'bold'),
+             bg='white', fg='#334155').pack(side=tk.LEFT, padx=(0, 8))
         
         # Date filter options
         date_filter_var = tk.StringVar(value="all")
@@ -964,59 +1029,67 @@ class ManagerUI:
             ("This Year", "year"),
             ("Custom Date", "custom")
         ]
-        
+
+        date_group = tk.Frame(filter_frame, bg='#f1f5f9', padx=6, pady=4)
+        date_group.pack(side=tk.LEFT)
+
         for text, value in filter_buttons:
-            btn = tk.Radiobutton(filter_frame, text=text, variable=date_filter_var,
-                               value=value, bg='white', font=('Segoe UI', 9),
-                               indicatoron=False, padx=15, pady=5,
-                               selectcolor='#3b82f6', fg='#1e293b',
-                               activebackground='#3b82f6', activeforeground='white',
-                               relief=tk.FLAT, cursor='hand2')
+            btn = tk.Radiobutton(date_group, text=text, variable=date_filter_var,
+                                 value=value, bg='#f1f5f9', font=('Segoe UI', 9),
+                                 indicatoron=False, padx=15, pady=5,
+                                 selectcolor='#2563eb', fg='#1e293b',
+                                 activebackground='#3b82f6', activeforeground='white',
+                                 relief=tk.FLAT, cursor='hand2', borderwidth=0)
             btn.pack(side=tk.LEFT, padx=2)
         
         # Level selection (Category/Subcategory)
-        tk.Label(filter_frame, text=" | View:", font=('Segoe UI', 10, 'bold'),
-                bg='white').pack(side=tk.LEFT, padx=(20, 10))
+        tk.Label(filter_frame, text="View:", font=('Segoe UI', 10, 'bold'),
+                 bg='white', fg='#334155').pack(side=tk.LEFT, padx=(20, 8))
         
         level_var = tk.StringVar(value="category")
-        tk.Radiobutton(filter_frame, text="Category", variable=level_var,
-                      value="category", bg='white', font=('Segoe UI', 9),
-                      indicatoron=False, padx=15, pady=5,
-                      selectcolor='#10b981', fg='#1e293b',
-                      activebackground='#10b981', activeforeground='white',
-                      relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
+        view_group = tk.Frame(filter_frame, bg='#ecfeff', padx=6, pady=4)
+        view_group.pack(side=tk.LEFT)
+
+        tk.Radiobutton(view_group, text="Category", variable=level_var,
+                       value="category", bg='#ecfeff', font=('Segoe UI', 9),
+                       indicatoron=False, padx=15, pady=5,
+                       selectcolor='#10b981', fg='#1e293b',
+                       activebackground='#10b981', activeforeground='white',
+                       relief=tk.FLAT, cursor='hand2', borderwidth=0).pack(side=tk.LEFT, padx=2)
         
-        tk.Radiobutton(filter_frame, text="Subcategory", variable=level_var,
-                      value="subcategory", bg='white', font=('Segoe UI', 9),
-                      indicatoron=False, padx=15, pady=5,
-                      selectcolor='#10b981', fg='#1e293b',
-                      activebackground='#10b981', activeforeground='white',
-                      relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=2)
+        tk.Radiobutton(view_group, text="Subcategory", variable=level_var,
+                       value="subcategory", bg='#ecfeff', font=('Segoe UI', 9),
+                       indicatoron=False, padx=15, pady=5,
+                       selectcolor='#10b981', fg='#1e293b',
+                       activebackground='#10b981', activeforeground='white',
+                       relief=tk.FLAT, cursor='hand2', borderwidth=0).pack(side=tk.LEFT, padx=2)
         
         # Problematic (80%) filter checkbox
         problematic_var = tk.BooleanVar(value=False)
         tk.Checkbutton(filter_frame, text=" Show Only Problematic (80%)",
-                      variable=problematic_var,
-                      bg='white', fg='#ef4444', 
-                      font=('Segoe UI', 9, 'bold'),
-                      selectcolor='white',
-                      activebackground='white',
-                      activeforeground='#dc2626',
-                      cursor='hand2').pack(side=tk.LEFT, padx=20)
+                       variable=problematic_var,
+                       bg='white', fg='#ef4444', 
+                       font=('Segoe UI', 9, 'bold'),
+                       selectcolor='white',
+                       activebackground='white',
+                       activeforeground='#dc2626',
+                       cursor='hand2').pack(side=tk.LEFT, padx=20)
+        tk.Label(filter_frame, textvariable=filter_status_var, font=('Segoe UI', 9),
+                 bg='white', fg='#64748b').pack(side=tk.RIGHT, padx=5)
         
         
         # Custom date picker frame (hidden by default)
-        custom_date_frame = tk.Frame(search_control_frame, bg='#f8fafc')
+        custom_date_frame = tk.Frame(search_control_frame, bg='#f8fafc', padx=12, pady=8)
         
         tk.Label(custom_date_frame, text="From:", bg='#f8fafc',
-                font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(20, 5))
+                 font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(20, 5))
         start_date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
         start_date_entry = tk.Entry(custom_date_frame, textvariable=start_date_var,
                                     width=12, font=('Segoe UI', 9))
         start_date_entry.pack(side=tk.LEFT, padx=5)
         
         tk.Label(custom_date_frame, text="To:", bg='#f8fafc',
-                font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(20, 5))
+                 font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(20, 5))
         end_date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
         end_date_entry = tk.Entry(custom_date_frame, textvariable=end_date_var,
                                   width=12, font=('Segoe UI', 9))
@@ -1025,22 +1098,11 @@ class ManagerUI:
         tk.Button(custom_date_frame, text="Apply", command=lambda: apply_filters(),
                  bg='#3b82f6', fg='white', font=('Segoe UI', 9, 'bold'),
                  padx=10, pady=3, relief=tk.FLAT, cursor='hand2').pack(side=tk.LEFT, padx=10)
-        
-        def show_custom_date(*args):
-            if date_filter_var.get() == "custom":
-                custom_date_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
-            else:
-                custom_date_frame.pack_forget()
-                apply_filters()
-        
-        date_filter_var.trace_add('write', show_custom_date)
-        level_var.trace_add('write', lambda *args: apply_filters())
-        problematic_var.trace_add('write', lambda *args: apply_filters())
-        
+
         # Chart frame
         self.chart_frame = tk.Frame(self.content, bg='white')
         self.chart_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=(0, 20))
-        
+
         # Store variables for export
         self.analytics_search_var = search_var
         self.analytics_date_filter = date_filter_var
@@ -1048,17 +1110,16 @@ class ManagerUI:
         self.analytics_start_date = start_date_var
         self.analytics_end_date = end_date_var
         self.analytics_problematic = problematic_var
-        
+
         def apply_filters():
-            project_filter = search_var.get().strip() if search_var.get() != "Search projects or select filters..." else None
+            project_filter = get_project_filter()
             date_filter = date_filter_var.get()
             level = level_var.get()
             show_problematic_only = problematic_var.get()
-            
-            # Calculate date range
+
             start_date = None
             end_date = None
-            
+
             if date_filter == "today":
                 start_date = datetime.now().date().isoformat()
                 end_date = start_date
@@ -1068,45 +1129,90 @@ class ManagerUI:
                 end_date = today.isoformat()
             elif date_filter == "quarter":
                 today = datetime.now().date()
-                # Calculate current quarter (Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec)
                 quarter = (today.month - 1) // 3
                 start_month = quarter * 3 + 1
                 start_date = datetime(today.year, start_month, 1).date().isoformat()
                 end_date = today.isoformat()
             elif date_filter == "year":
                 today = datetime.now().date()
-                # Financial year starts October 1st
                 if today.month >= 10:
                     start_date = datetime(today.year, 10, 1).date().isoformat()
                 else:
                     start_date = datetime(today.year - 1, 10, 1).date().isoformat()
                 end_date = today.isoformat()
             elif date_filter == "custom":
-                start_date = start_date_var.get()
-                end_date = end_date_var.get()
-            
+                try:
+                    start_obj = datetime.strptime(start_date_var.get().strip(), '%Y-%m-%d').date()
+                    end_obj = datetime.strptime(end_date_var.get().strip(), '%Y-%m-%d').date()
+                except ValueError:
+                    filter_status_var.set("Custom date format must be YYYY-MM-DD.")
+                    self._analytics_filter_after = None
+                    return
+
+                if start_obj > end_obj:
+                    filter_status_var.set("Start date cannot be after end date.")
+                    self._analytics_filter_after = None
+                    return
+
+                start_date = start_obj.isoformat()
+                end_date = end_obj.isoformat()
+
+            if date_filter == "all":
+                date_summary = "All time"
+            elif date_filter == "today":
+                date_summary = "Today"
+            elif date_filter == "month":
+                date_summary = "This month"
+            elif date_filter == "quarter":
+                date_summary = "This quarter"
+            elif date_filter == "year":
+                date_summary = "This financial year"
+            else:
+                date_summary = f"{start_date} to {end_date}"
+
+            project_summary = project_filter if project_filter else "All projects"
+            view_summary = "Problematic only" if show_problematic_only else "All categories"
+            filter_status_var.set(f"{project_summary} | {date_summary} | {view_summary}")
+
             self.updtchartforfilter(start_date, end_date, project_filter, level, show_problematic_only)
-        
+            self._analytics_filter_after = None
+
+        def show_custom_date(*args):
+            if date_filter_var.get() == "custom":
+                custom_date_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
+            else:
+                custom_date_frame.pack_forget()
+            schedule_filter_apply(100)
+
+        def on_custom_date_change(*args):
+            if date_filter_var.get() == "custom":
+                schedule_filter_apply(260)
+
+        search_var.trace_add('write', update_suggestions)
+        date_filter_var.trace_add('write', show_custom_date)
+        level_var.trace_add('write', lambda *args: schedule_filter_apply(100))
+        problematic_var.trace_add('write', lambda *args: schedule_filter_apply(100))
+        start_date_var.trace_add('write', on_custom_date_change)
+        end_date_var.trace_add('write', on_custom_date_change)
+
         # Initial load
         apply_filters()
-        
-        # Placeholder behavior
-        search_entry.insert(0, "Search projects or select filters...")
-        search_entry.config(fg='#94a3b8')
-        
+
         def on_focus_in(event):
-            if search_entry.get() == "Search projects or select filters...":
+            if search_entry.get() == placeholder:
                 search_entry.delete(0, tk.END)
                 search_entry.config(fg='#1e293b')
-        
+
         def on_focus_out(event):
             if not search_entry.get():
-                search_entry.insert(0, "Search projects or select filters...")
+                search_entry.insert(0, placeholder)
                 search_entry.config(fg='#94a3b8')
-        
+
         search_entry.bind("<FocusIn>", on_focus_in)
         search_entry.bind("<FocusOut>", on_focus_out)
         search_entry.bind("<Return>", lambda e: apply_filters())
+        start_date_entry.bind("<Return>", lambda e: apply_filters())
+        end_date_entry.bind("<Return>", lambda e: apply_filters())
 
     def updtchartforfilter(self, start_date, end_date, project, level, show_problematic_only=False):
         """
@@ -1116,9 +1222,13 @@ class ManagerUI:
         using cumulative frequency analysis.
         """
         # Clear previous chart
+        if self._analytics_chart_figure is not None:
+            plt.close(self._analytics_chart_figure)
+            self._analytics_chart_figure = None
+        self._analytics_chart_canvas = None
+
         for w in self.chart_frame.winfo_children():
             w.destroy()
-        plt.close('all')
         
         stats = self.db.getcatstats(start_date, end_date, project)
         
@@ -1150,6 +1260,12 @@ class ManagerUI:
         
         # Calculate total from ALL sorted items
         total = sum(values)
+        if total == 0:
+            empty_frame = tk.Frame(self.chart_frame, bg='white')
+            empty_frame.place(relx=0.5, rely=0.5, anchor='center')
+            tk.Label(empty_frame, text="No measurable frequency found for selected filters.",
+                font=('Segoe UI', 12), fg='#64748b', bg='white').pack(pady=5)
+            return
         
         # Calculate cumulative percentage for these sorted items
         cumulative = []
@@ -1237,6 +1353,8 @@ class ManagerUI:
         canvas = FigureCanvasTkAgg(fig, self.chart_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._analytics_chart_canvas = canvas
+        self._analytics_chart_figure = fig
         
 
         
@@ -1267,7 +1385,7 @@ class ManagerUI:
             from openpyxl.utils import get_column_letter
             
             # Get current filter values
-            project_filter = self.analytics_search_var.get().strip() if self.analytics_search_var.get() != "Search projects or select filters..." else None
+            project_filter = self.analytics_search_var.get().strip() if self.analytics_search_var.get() != self._analytics_placeholder else None
             date_filter = self.analytics_date_filter.get()
             start_date = None
             end_date = None
