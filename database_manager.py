@@ -3,17 +3,23 @@ import json
 import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
+from path_policy import (
+    resolve_storage_location,
+    to_absolute_path,
+    to_relative_path,
+    to_relative_storage_location,
+)
 
 class DatabaseManager:
     """Centralized PostgreSQL database manager for the Quality Inspection Tool"""
+    _PATH_FIELDS = ("pdf_path", "excel_path", "session_path")
     
     def __init__(self, db_path: str):
-        """Initialize database connection and create tables if needed"""
+        """Initialize database connection."""
         self.db_path = db_path
         self.conn = None
         self.cursor = None
         self._connect()
-        self._create_tables()
     
     def _connect(self):
         """Establish database connection"""
@@ -40,82 +46,40 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error getting project location: {e}")
             return None
-    
-    def _create_tables(self):
-        """Create all required tables"""
-        
-        # Projects table - stores all projects ever created
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_name TEXT NOT NULL,
-                sales_order_no TEXT,
-                cabinet_id TEXT NOT NULL UNIQUE,
-                storage_location TEXT NOT NULL,
-                created_date TEXT NOT NULL,
-                last_accessed TEXT NOT NULL,
-                pdf_path TEXT,
-                excel_path TEXT,
-                session_path TEXT,
-                status TEXT DEFAULT 'active',
-                notes TEXT
-            )
-        """)
-        
-        # Recent projects table - tracks recently accessed projects
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS recent_projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cabinet_id TEXT NOT NULL,
-                last_accessed TEXT NOT NULL,
-                FOREIGN KEY (cabinet_id) REFERENCES projects(cabinet_id)
-            )
-        """)
-        
-        # Quality handovers table
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS quality_handovers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cabinet_id TEXT NOT NULL UNIQUE,
-                project_name TEXT NOT NULL,
-                sales_order_no TEXT,
-                pdf_path TEXT,
-                excel_path TEXT,
-                session_path TEXT,
-                total_punches INTEGER DEFAULT 0,
-                open_punches INTEGER DEFAULT 0,
-                closed_punches INTEGER DEFAULT 0,
-                handed_over_by TEXT NOT NULL,
-                handed_over_date TEXT NOT NULL,
-                status TEXT DEFAULT 'pending_production',
-                production_received_by TEXT,
-                production_received_date TEXT,
-                rework_completed_by TEXT,
-                rework_completed_date TEXT,
-                production_remarks TEXT,
-                quality_verified_by TEXT,
-                quality_verified_date TEXT,
-                FOREIGN KEY (cabinet_id) REFERENCES projects(cabinet_id)
-            )
-        """)
-        
-        # Create indexes for better performance
-        self.cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_recent_accessed 
-            ON recent_projects(last_accessed DESC)
-        """)
-        
-        self.cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_project_cabinet 
-            ON projects(cabinet_id)
-        """)
-        
-        self.cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_handover_status 
-            ON quality_handovers(status)
-        """)
-        
-        self.conn.commit()
+
+    def _serialize_project_data(self, data: Dict) -> Dict:
+        normalized = dict(data or {})
+
+        if 'storage_location' in normalized:
+            normalized['storage_location'] = to_relative_storage_location(normalized.get('storage_location'))
+
+        for field in self._PATH_FIELDS:
+            if field in normalized:
+                normalized[field] = to_relative_path(normalized.get(field))
+
+        return normalized
+
+    def _serialize_handover_data(self, data: Dict) -> Dict:
+        normalized = dict(data or {})
+        for field in self._PATH_FIELDS:
+            if field in normalized:
+                normalized[field] = to_relative_path(normalized.get(field))
+        return normalized
+
+    def _resolve_project_record(self, record: Dict) -> Dict:
+        resolved = dict(record or {})
+        resolved['storage_location'] = resolve_storage_location(resolved.get('storage_location'))
+        for field in self._PATH_FIELDS:
+            if field in resolved:
+                resolved[field] = to_absolute_path(resolved.get(field))
+        return resolved
+
+    def _resolve_handover_record(self, record: Dict) -> Dict:
+        resolved = dict(record or {})
+        for field in self._PATH_FIELDS:
+            if field in resolved:
+                resolved[field] = to_absolute_path(resolved.get(field))
+        return resolved
     
     # ================================================================
     # PROJECT MANAGEMENT
@@ -124,6 +88,8 @@ class DatabaseManager:
     def add_project(self, project_data: Dict) -> bool:
         """Add a new project to the database"""
         try:
+            project_data = self._serialize_project_data(project_data)
+
             self.cursor.execute("""
                 INSERT INTO projects (
                     project_name, sales_order_no, cabinet_id, storage_location,
@@ -134,7 +100,7 @@ class DatabaseManager:
                 project_data.get('project_name'),
                 project_data.get('sales_order_no'),
                 project_data.get('cabinet_id'),
-                project_data.get('storage_location'),
+                project_data.get('storage_location') or '.',
                 project_data.get('created_date', datetime.now().isoformat()),
                 project_data.get('last_accessed', datetime.now().isoformat()),
                 project_data.get('pdf_path'),
@@ -170,17 +136,30 @@ class DatabaseManager:
         FIXED: Properly matches number of placeholders with values
         """
         try:
-            # Build dynamic UPDATE query
-            set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
-            values = list(updates.values())
-            
-            # Add last_accessed and cabinet_id (for WHERE clause)
-            values.append(datetime.now().isoformat())
+            updates = self._serialize_project_data(updates)
+
+            # Build dynamic UPDATE query while assigning last_accessed only once.
+            set_parts = []
+            values = []
+
+            for key, value in updates.items():
+                if key == "last_accessed":
+                    continue
+                set_parts.append(f"{key} = ?")
+                values.append(value)
+
+            requested_last_accessed = updates.get("last_accessed")
+            if requested_last_accessed in (None, ""):
+                requested_last_accessed = datetime.now().isoformat()
+
+            set_parts.append("last_accessed = ?")
+            values.append(requested_last_accessed)
             values.append(cabinet_id)
+            set_clause = ", ".join(set_parts)
             
             self.cursor.execute(f"""
                 UPDATE projects 
-                SET {set_clause}, last_accessed = ?
+                SET {set_clause}
                 WHERE cabinet_id = ?
             """, values)
             
@@ -204,7 +183,7 @@ class DatabaseManager:
         
         row = self.cursor.fetchone()
         if row:
-            return dict(row)
+            return self._resolve_project_record(dict(row))
         return None
     
     def get_all_projects(self, status: Optional[str] = None) -> List[Dict]:
@@ -221,7 +200,7 @@ class DatabaseManager:
                 ORDER BY last_accessed DESC
             """)
         
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._resolve_project_record(dict(row)) for row in self.cursor.fetchall()]
     
     def search_projects(self, search_term: str) -> List[Dict]:
         """Search projects by name, cabinet ID, or sales order"""
@@ -234,7 +213,7 @@ class DatabaseManager:
             ORDER BY last_accessed DESC
         """, (search_pattern, search_pattern, search_pattern))
         
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._resolve_project_record(dict(row)) for row in self.cursor.fetchall()]
     
     def project_exists(self, cabinet_id: str) -> bool:
         """Check if project exists"""
@@ -250,7 +229,7 @@ class DatabaseManager:
         """, (cabinet_id,))
         
         row = self.cursor.fetchone()
-        return row[0] if row else None
+        return resolve_storage_location(row[0]) if row else None
     
     # ================================================================
     # RECENT PROJECTS
@@ -291,7 +270,7 @@ class DatabaseManager:
             LIMIT ?
         """, (limit,))
         
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._resolve_project_record(dict(row)) for row in self.cursor.fetchall()]
     
     def clear_old_recent_projects(self, days: int = 7):
         """Clear recent projects older than specified days"""
@@ -312,6 +291,8 @@ class DatabaseManager:
     def add_quality_handover(self, handover_data: Dict) -> bool:
         """Add quality handover to production"""
         try:
+            handover_data = self._serialize_handover_data(handover_data)
+
             self.cursor.execute("""
                 INSERT INTO quality_handovers (
                     cabinet_id, project_name, sales_order_no, pdf_path,
@@ -409,7 +390,7 @@ class DatabaseManager:
             ORDER BY handed_over_date DESC
         """)
         
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._resolve_handover_record(dict(row)) for row in self.cursor.fetchall()]
     
     def get_pending_quality_items(self) -> List[Dict]:
         """Get items pending quality verification"""
@@ -419,7 +400,7 @@ class DatabaseManager:
             ORDER BY rework_completed_date DESC
         """)
         
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._resolve_handover_record(dict(row)) for row in self.cursor.fetchall()]
     
     def get_handover_by_cabinet(self, cabinet_id: str) -> Optional[Dict]:
         """Get handover record by cabinet ID"""
@@ -428,7 +409,7 @@ class DatabaseManager:
         """, (cabinet_id,))
         
         row = self.cursor.fetchone()
-        return dict(row) if row else None
+        return self._resolve_handover_record(dict(row)) if row else None
     
     # ================================================================
     # UTILITY METHODS

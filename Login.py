@@ -1,9 +1,19 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import os, sys, json
-from datetime import datetime
+import os, sys
 import subprocess
+import runpy
 from PIL import Image, ImageTk
+
+# Make sibling modules importable in frozen one-file builds.
+if getattr(sys, 'frozen', False):
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        bundled_pages_dir = os.path.join(bundle_dir, "pages")
+        if os.path.isdir(bundled_pages_dir) and bundled_pages_dir not in sys.path:
+            sys.path.insert(0, bundled_pages_dir)
+
+from credentials_store_pg import load_users_from_postgres, save_users_to_postgres
 
 # ====================================================== 
 # APP BASE DIR (Portable)
@@ -14,37 +24,37 @@ def get_app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 BASE_DIR = get_app_base_dir()
-# Assets folder is one level up from current folder
-ASSETS_DIR = os.path.join(os.path.dirname(BASE_DIR), "assets")
-CRED_FILE = os.path.join(ASSETS_DIR, "credentials.json")
+
+
+def get_asset_path(filename: str) -> str:
+    """Resolve image path in source mode and frozen PyInstaller mode."""
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        bundled_path = os.path.join(bundle_dir, "assets", filename)
+        if os.path.exists(bundled_path):
+            return bundled_path
+
+    if getattr(sys, 'frozen', False):
+        return os.path.join(BASE_DIR, "assets", filename)
+
+    return os.path.join(os.path.dirname(BASE_DIR), "assets", filename)
 
 # ====================================================== 
 # CREDENTIAL HELPERS
 # ====================================================== 
 def load_credentials():
-    """Load user credentials from assets/credentials.json"""
-    if not os.path.exists(CRED_FILE):
-        os.makedirs(ASSETS_DIR, exist_ok=True)
-        default_creds = {
-            "users": {
-                "admin": {"password": "admin123", "role": "Admin", "full_name": "Administrator"},
-                "manager1": {"password": "mgr@2024", "role": "Manager", "full_name": "Manager User"},
-                "quality1": {"password": "qc@2024", "role": "Quality", "full_name": "Kshitij Palshikar"},
-                "prod1": {"password": "prod@2024", "role": "Production", "full_name": "Kshitij Palshikar"}
-            }
-        }
-        with open(CRED_FILE, "w") as f:
-            json.dump(default_creds, f, indent=4)
-        print(f"[OK] Created default credentials at: {CRED_FILE}")
-        return default_creds
-    
-    with open(CRED_FILE, "r") as f:
-        return json.load(f)
+    """Load user credentials from PostgreSQL credential table."""
+    try:
+        users = load_users_from_postgres("inspection_tool")
+        return {"users": users}
+    except Exception as e:
+        print(f"[ERROR] Failed to load credentials from PostgreSQL: {e}")
+        return {"users": {}}
 
 def save_credentials(credentials):
-    """Save user credentials to assets/credentials.json"""
-    with open(CRED_FILE, "w") as f:
-        json.dump(credentials, f, indent=4)
+    """Save user credentials into PostgreSQL credential table."""
+    users = credentials.get("users", {}) if isinstance(credentials, dict) else {}
+    save_users_to_postgres(users, "inspection_tool")
 
 def authenticate_user(username, password, credentials):
     """Authenticate user and return role and full name"""
@@ -59,23 +69,93 @@ def authenticate_user(username, password, credentials):
 # ====================================================== 
 def route_to_role(username, full_name, role):
     """Route to appropriate module with username and full_name as command-line arguments"""
-    python_exec = sys.executable or "python"
+    module_by_role = {
+        "Quality": "quality",
+        "Manager": "manager",
+        "Production": "production",
+    }
 
-    if role == "Quality":
-        # Pass both username and full_name to quality module
-        quality_path = os.path.join(BASE_DIR, "quality.py")
-        subprocess.Popen([python_exec, quality_path, username, full_name])
-    elif role == "Manager":
-        manager_path = os.path.join(BASE_DIR, "manager.py")
-        subprocess.Popen([python_exec, manager_path, username, full_name])
-    elif role == "Production":
-        # Pass both username and full_name to production module
-        production_path = os.path.join(BASE_DIR, "production.py")
-        subprocess.Popen([python_exec, production_path, username, full_name])
-    elif role == "Admin":
+    if role == "Admin":
         messagebox.showinfo("Admin", "Admin panel opened!")
-    else:
+        return
+
+    module_name = module_by_role.get(role)
+    if not module_name:
         messagebox.showerror("Routing Error", f"Page for '{role}' not implemented yet!")
+        return
+
+    launch_args = ["--module", module_name, username, full_name]
+
+    if getattr(sys, 'frozen', False):
+        subprocess.Popen([sys.executable] + launch_args)
+        return
+
+    python_exec = sys.executable or "python"
+    login_script = os.path.join(BASE_DIR, "Login.py")
+    subprocess.Popen([python_exec, login_script] + launch_args)
+
+
+def _resolve_pages_dir() -> str:
+    """Resolve pages directory in both source and PyInstaller one-file modes."""
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        bundled_pages = os.path.join(bundle_dir, "pages")
+        if os.path.isdir(bundled_pages):
+            return bundled_pages
+    return BASE_DIR
+
+
+def _run_module_entry(module_name: str, username: str, full_name: str) -> bool:
+    """Run one of the role modules by executing its script file as __main__."""
+    script_name_by_module = {
+        "quality": "quality.py",
+        "manager": "manager.py",
+        "production": "production.py",
+    }
+    script_name = script_name_by_module.get(module_name.lower())
+    if not script_name:
+        return False
+
+    pages_dir = _resolve_pages_dir()
+    script_path = os.path.join(pages_dir, script_name)
+    if not os.path.exists(script_path):
+        print(f"[ERROR] Module script not found: {script_path}")
+        return False
+
+    original_argv = list(sys.argv)
+    inserted_path = False
+    try:
+        if pages_dir not in sys.path:
+            sys.path.insert(0, pages_dir)
+            inserted_path = True
+
+        # Keep argv shape compatible with existing module code.
+        sys.argv = [script_path, username, full_name]
+        runpy.run_path(script_path, run_name="__main__")
+        return True
+    finally:
+        sys.argv = original_argv
+        if inserted_path:
+            try:
+                sys.path.remove(pages_dir)
+            except ValueError:
+                pass
+
+
+def dispatch_from_args() -> bool:
+    """Dispatch to a role module when running as launcher process."""
+    if "--module" not in sys.argv:
+        return False
+
+    idx = sys.argv.index("--module")
+    module_name = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
+    username = sys.argv[idx + 2] if idx + 2 < len(sys.argv) else ""
+    full_name = sys.argv[idx + 3] if idx + 3 < len(sys.argv) else ""
+
+    ran = _run_module_entry(module_name, username, full_name)
+    if not ran:
+        messagebox.showerror("Launch Error", f"Unknown module: {module_name}")
+    return True
 
 # ====================================================== 
 # ADMIN PANEL
@@ -136,6 +216,8 @@ class AdminPanel:
                  padx=15, pady=8, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=5)
     
     def refresh_users(self):
+        self.credentials = load_credentials()
+
         for item in self.tree.get_children():
             self.tree.delete(item)
         
@@ -287,7 +369,7 @@ class LoginPage:
         
         # Load and display Emerson logo
         try:
-            logo_path = os.path.join(ASSETS_DIR, "EmersonLogo.png")
+            logo_path = get_asset_path("EmersonLogo.png")
             if os.path.exists(logo_path):
                 logo_img = Image.open(logo_path)
                 # Resize logo to fit nicely in header (maintain aspect ratio)
@@ -304,7 +386,7 @@ class LoginPage:
                         font=("Segoe UI", 26, "bold"), 
                         bg="#1e1e1e", fg="#00bcd4").pack(pady=30)
                 print(f"[WARN] Logo not found at: {logo_path}")
-                print(f"   Please place EmersonLogo.png in the assets folder")
+                print("   Could not load bundled EmersonLogo.png")
         except Exception as e:
             # Fallback to text if error loading logo
             tk.Label(header_frame, text="INPROCESS TOOL", 
@@ -362,6 +444,8 @@ class LoginPage:
         if not username or not password:
             messagebox.showerror("Error", "Please enter username and password!")
             return
+
+        self.credentials = load_credentials()
         
         role, full_name = authenticate_user(username, password, self.credentials)
         
@@ -381,12 +465,16 @@ class LoginPage:
     
     def open_admin(self):
         # Quick admin access for demo purposes
+        self.credentials = load_credentials()
         AdminPanel(self.root, self.credentials)
 
 # ====================================================== 
 # RUN APP
 # ====================================================== 
 if __name__ == "__main__":
+    if dispatch_from_args():
+        sys.exit(0)
+
     root = tk.Tk()
     app = LoginPage(root)
     root.mainloop()

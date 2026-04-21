@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, filedialog
+from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 import json
 import os
@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import calendar
+from path_policy import resolve_storage_location, to_absolute_path
+from category_store_pg import load_categories_from_postgres, save_categories_to_postgres
+import filedialog_compat as filedialog
 
 
 def getbase():
@@ -77,7 +80,6 @@ class ManagerDatabase:
         with the Quality Inspection tool.
         """
         self.db_path = db_path
-        self.initializedb()
         
         # Excel column mapping (same as Quality Inspection tool)
         self.punch_sheet_name = 'Punch Sheet'
@@ -93,44 +95,6 @@ class ManagerDatabase:
             'closed_name': 'I',
             'closed_date': 'J'
         }
-    
-    def initializedb(self):
-        """
-        Create required PostgreSQL tables if they do not already exist.
-    
-        Tables:
-        - cabinets: cabinet-level tracking and status
-        - category_occurrences: defect category logging for analytics
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS cabinets (
-            cabinet_id TEXT PRIMARY KEY,
-            project_name TEXT,
-            sales_order_no TEXT,
-            total_pages INTEGER DEFAULT 0,
-            annotated_pages INTEGER DEFAULT 0,
-            total_punches INTEGER DEFAULT 0,
-            open_punches INTEGER DEFAULT 0,
-            implemented_punches INTEGER DEFAULT 0,
-            closed_punches INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'quality_inspection',
-            created_date TEXT,
-            last_updated TEXT,
-            storage_location TEXT,
-            excel_path TEXT)''')
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS category_occurrences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cabinet_id TEXT,
-            project_name TEXT,
-            category TEXT,
-            subcategory TEXT,
-            occurrence_date TEXT)''')
-        
-        conn.commit()
-        conn.close()
     
     def split_cell(self, cell_ref):
         """
@@ -337,6 +301,8 @@ class ManagerDatabase:
         cabinets = []
         for row in cursor.fetchall():
             cabinet_id, project_name, total_pages, annotated_pages, db_status, excel_path, storage_location = row
+            excel_path = to_absolute_path(excel_path)
+            storage_location = resolve_storage_location(storage_location)
             
             # Get real counts from Excel
             total_punches, implemented_punches, closed_punches = self.punchcount(excel_path)
@@ -523,30 +489,24 @@ class ManagerUI:
     
     def loadcat(self):
         """
-        Load defect categories from JSON storage.
-    
-        Returns an empty list if the file does not exist
-        or cannot be parsed.
+        Load defect categories from PostgreSQL category tables.
         """
         try:
-            if os.path.exists(self.category_file):
-                with open(self.category_file, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    return loaded
-        except Exception:
-            pass
+            return load_categories_from_postgres("inspection_tool")
+        except Exception as e:
+            print(f"Failed to load categories from PostgreSQL: {e}")
         return []
+
+    def _write_category_catalog(self, categories, source="manager"):
+        # Backward-compatible wrapper name used by legacy callsites.
+        save_categories_to_postgres(categories, "inspection_tool")
     
     def savecat(self):
         """
-        Persist defect categories to disk in JSON format.
-    
-        Ensures directory creation and safe file writing.
+        Persist defect categories to PostgreSQL category tables.
         """
         try:
-            os.makedirs(os.path.dirname(self.category_file), exist_ok=True)
-            with open(self.category_file, "w", encoding="utf-8") as f:
-                json.dump(self.categories, f, indent=2)
+            save_categories_to_postgres(self.categories, "inspection_tool")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save:\n{e}")
     

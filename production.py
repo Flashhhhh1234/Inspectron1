@@ -19,6 +19,7 @@ import pg_sqlite_compat as sqlite3
 import numpy as np
 from handover_database import HandoverDB
 from database_manager import DatabaseManager
+from path_policy import to_relative_path, to_relative_storage_location
 import sys
 
 User = sys.argv[1] if len(sys.argv) > 1 else None
@@ -39,62 +40,25 @@ def getbase():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def asset_path(filename):
+    """Resolve asset paths for source runs and PyInstaller bundles."""
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        bundled_path = os.path.join(bundle_dir, "assets", filename)
+        if os.path.exists(bundled_path):
+            return bundled_path
+
+    if getattr(sys, 'frozen', False):
+        return os.path.join(getbase(), "assets", filename)
+
+    return os.path.join(os.path.dirname(getbase()), "assets", filename)
+
+
 class ManagerDB:
     """Manager database integration for status tracking"""
     
     def __init__(self, db_path):
         self.db_path = db_path
-        self.initializedatabase()
-    
-    def initializedatabase(self):
-        """
-        Create database schema with cabinets and category_occurrences tables.
-        FUNCTIONAL USE: Initializes persistent storage for cabinet metadata, punch statistics,
-        and status tracking. Adds missing columns to existing tables if needed.
-        Schema includes: cabinet_id, project info, punch counts, status, dates, storage location, excel_path
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS cabinets (
-            cabinet_id TEXT PRIMARY KEY,
-            project_name TEXT,
-            sales_order_no TEXT,
-            total_pages INTEGER DEFAULT 0,
-            annotated_pages INTEGER DEFAULT 0,
-            total_punches INTEGER DEFAULT 0,
-            open_punches INTEGER DEFAULT 0,
-            implemented_punches INTEGER DEFAULT 0,
-            closed_punches INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'quality_inspection',
-            created_date TEXT,
-            last_updated TEXT,
-            storage_location TEXT,
-            excel_path TEXT
-        )''')
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS category_occurrences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cabinet_id TEXT,
-            project_name TEXT,
-            category TEXT,
-            subcategory TEXT,
-            occurrence_date TEXT
-        )''')
-        
-        # Add columns if they don't exist
-        try:
-            cursor.execute('ALTER TABLE cabinets ADD COLUMN storage_location TEXT')
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute('ALTER TABLE cabinets ADD COLUMN excel_path TEXT')
-        except sqlite3.OperationalError:
-            pass
-        
-        conn.commit()
-        conn.close()
     
     def updcab(self, cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
                       total_punches, open_punches, implemented_punches, closed_punches, status,
@@ -106,6 +70,9 @@ class ManagerDB:
         Used by production module to sync work progress with quality management system.
         """
         try:
+            storage_location_db = to_relative_storage_location(storage_location)
+            excel_path_db = to_relative_path(excel_path)
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
@@ -119,7 +86,7 @@ class ManagerDB:
                         ?)
             ''', (cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
                   total_punches, open_punches, implemented_punches, closed_punches, status,
-                  storage_location, excel_path,
+                storage_location_db, excel_path_db,
                   cabinet_id, datetime.now().isoformat(),
                   datetime.now().isoformat()))
             
@@ -503,18 +470,17 @@ class ProductionTool:
         self.text_btn = None
         
         try:
-            assets_dir = os.path.join(os.path.dirname(getbase()), "assets")
             icon_size = (44, 44)
             
-            pen_icon_path = os.path.join(assets_dir, "pen_icon.png")
+            pen_icon_path = asset_path("pen_icon.png")
             pen_img = Image.open(pen_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.pen_icon = ImageTk.PhotoImage(pen_img)
             
-            text_icon_path = os.path.join(assets_dir, "text_icon.png")
+            text_icon_path = asset_path("text_icon.png")
             text_img = Image.open(text_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.text_icon = ImageTk.PhotoImage(text_img)
             
-            undo_icon_path = os.path.join(assets_dir, "undo_icon.png")
+            undo_icon_path = asset_path("undo_icon.png")
             undo_img = Image.open(undo_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.undo_icon = ImageTk.PhotoImage(undo_img)
             
@@ -779,12 +745,12 @@ class ProductionTool:
         """
         try:
             # Verify files exist
-            if not os.path.exists(item['pdf_path']):
+            if not item.get('pdf_path') or not os.path.exists(item['pdf_path']):
                 messagebox.showerror("File Not Found", 
                                    f"PDF not found:\n{item['pdf_path']}")
                 return
             
-            if not os.path.exists(item['excel_path']):
+            if not item.get('excel_path') or not os.path.exists(item['excel_path']):
                 messagebox.showerror("File Not Found", 
                                    f"Excel not found:\n{item['excel_path']}")
                 return

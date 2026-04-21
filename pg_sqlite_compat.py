@@ -10,16 +10,17 @@ from __future__ import annotations
 import json
 import os
 import re
-import importlib
 import sys
 from typing import Iterable, Optional, Sequence
 
 try:
-    _pg = importlib.import_module("psycopg2")
+    import psycopg2 as _pg  # type: ignore
+
     _pg_driver = "psycopg2"
 except ImportError:  # pragma: no cover
     try:
-        _pg = importlib.import_module("psycopg")
+        import psycopg as _pg  # type: ignore
+
         _pg_driver = "psycopg"
     except ImportError:  # pragma: no cover
         _pg = None
@@ -167,76 +168,43 @@ def _connect_postgres(db_path: Optional[str]):
             f"Install with: \"{sys.executable}\" -m pip install psycopg2-binary"
         )
 
-    config = _load_postgres_config()
-    host = _setting(config, "POSTGRES_HOST", "PGHOST", "localhost")
-    port = _setting(config, "POSTGRES_PORT", "PGPORT", "5432")
-    dbname = _setting(config, "POSTGRES_DB", "PGDATABASE", config.get("dbname", "inspection_tool"))
-    user = _setting(config, "POSTGRES_USER", "PGUSER", "postgres")
-    password = _setting(config, "POSTGRES_PASSWORD", "PGPASSWORD", config.get("password"))
-    maintenance_db = _setting(config, "POSTGRES_MAINTENANCE_DB", default=config.get("maintenance_db", "postgres"))
+    # Fixed production DB settings (no env/config overrides).
+    host = "10.132.16.14"
+    port = 5432
+    dbname = "inspection_tool"
+    user = "inspection_app"
+    password = "Emrsn#123"
+    maintenance_db = "postgres"
 
-    database_url = _setting(config, "DATABASE_URL", default=config.get("database_url"))
-    if database_url:
-        dsn_overrides = {
-            "host": host,
-            "port": int(port),
-            "dbname": dbname,
-            "user": user,
-        }
-        if password not in (None, ""):
-            dsn_overrides["password"] = password
+    connect_kwargs = {
+        "host": host,
+        "port": port,
+        "dbname": dbname,
+        "user": user,
+        "password": password,
+    }
 
-        try:
-            conn = _pg.connect(database_url, **dsn_overrides)
-        except Exception as exc:
-            if not _is_missing_database_error(exc, dbname):
-                raise
+    try:
+        conn = _pg.connect(**connect_kwargs)
+    except Exception as exc:
+        if not _is_missing_database_error(exc, dbname):
+            raise
 
-            _ensure_database_exists(
-                host=host,
-                port=int(port),
-                dbname=dbname,
-                user=user,
-                password=password,
-                maintenance_db=maintenance_db,
-            )
-            conn = _pg.connect(database_url, **dsn_overrides)
-    else:
-        connect_kwargs = {
-            "host": host,
-            "port": int(port),
-            "dbname": dbname,
-            "user": user,
-        }
-        if password not in (None, ""):
-            connect_kwargs["password"] = password
-
-        try:
-            conn = _pg.connect(
-                **connect_kwargs,
-            )
-        except Exception as exc:
-            if not _is_missing_database_error(exc, dbname):
-                raise
-
-            _ensure_database_exists(
-                host=host,
-                port=int(port),
-                dbname=dbname,
-                user=user,
-                password=password,
-                maintenance_db=maintenance_db,
-            )
-            conn = _pg.connect(
-                **connect_kwargs,
-            )
+        _ensure_database_exists(
+            host=host,
+            port=port,
+            dbname=dbname,
+            user=user,
+            password=password,
+            maintenance_db=maintenance_db,
+        )
+        conn = _pg.connect(**connect_kwargs)
 
     conn.autocommit = False
 
-    schema = _setting(config, "POSTGRES_SCHEMA", default=config.get("schema")) or _schema_from_db_path(db_path)
+    schema = _schema_from_db_path(db_path)
     if schema and schema != "public":
         with conn.cursor() as cur:
-            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
             cur.execute(f'SET search_path TO "{schema}", public')
         conn.commit()
 

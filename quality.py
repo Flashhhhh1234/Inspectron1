@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, Menu
+from tkinter import messagebox, simpledialog, Menu
 from PIL import Image, ImageTk, ImageDraw, ImageFont,ImageEnhance,ImageFilter
 import fitz  
 from openpyxl import load_workbook
@@ -19,6 +19,14 @@ import shlex
 from difflib import SequenceMatcher
 from handover_database import HandoverDB
 from database_manager import DatabaseManager
+from category_store_pg import load_categories_from_postgres
+from path_policy import (
+    get_base_path,
+    resolve_storage_location,
+    to_absolute_path,
+    to_relative_path,
+    to_relative_storage_location,
+)
 from tkinter import ttk
 import pytesseract
 import os
@@ -26,14 +34,44 @@ import cv2
 import io
 import re
 import sys
+import filedialog_compat as filedialog
 
 User = sys.argv[1] if len(sys.argv) > 1 else None
 Name = sys.argv[2] if len(sys.argv) > 2 else None
 
-path = r"C:\Users\E1547548\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+def configure_tesseract_cmd():
+    """Resolve Tesseract executable from env, PATH, and common install locations."""
+    env_candidates = [
+        os.environ.get("TESSERACT_CMD"),
+        os.environ.get("TESSERACT_PATH"),
+    ]
 
-if os.path.exists(path):
-    pytesseract.pytesseract.tesseract_cmd = path
+    path_candidate = shutil.which("tesseract")
+    path_candidates = [path_candidate] if path_candidate else []
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    common_candidates = [
+        os.path.join(local_app_data, "Programs", "Tesseract-OCR", "tesseract.exe") if local_app_data else "",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ]
+
+    for candidate in env_candidates + path_candidates + common_candidates:
+        if candidate and os.path.exists(candidate):
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            return candidate
+
+    return None
+
+
+TESSERACT_CMD = configure_tesseract_cmd()
+if TESSERACT_CMD:
+    print(f"[INFO] OCR engine path: {TESSERACT_CMD}")
+else:
+    print("[WARN] Tesseract was not found. Install it and add to PATH or set TESSERACT_CMD.")
     
 def app_base():
     """
@@ -47,6 +85,20 @@ def app_base():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def asset_path(filename):
+    """Resolve asset paths for source runs and PyInstaller bundles."""
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        bundled_path = os.path.join(bundle_dir, "assets", filename)
+        if os.path.exists(bundled_path):
+            return bundled_path
+
+    if getattr(sys, 'frozen', False):
+        return os.path.join(app_base(), "assets", filename)
+
+    return os.path.join(os.path.dirname(app_base()), "assets", filename)
+
+
     
     
 
@@ -55,57 +107,6 @@ class ManagerDB:
     """Manager database integration with storage_location and excel_path support"""
     def __init__(self, db_path):
         self.db_path = db_path
-        self.initializedb()
-    
-    def initializedb(self):
-        """
-        Create database schema with cabinets and category_occurrences tables.
-        FUNCTIONAL USE: Initializes persistent storage for cabinet metadata, punch statistics,
-        and status tracking. Adds missing columns to existing tables if needed.
-        Schema includes: cabinet_id, project info, punch counts, status, dates, storage location, excel_path
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS cabinets (
-            cabinet_id TEXT PRIMARY KEY,
-            project_name TEXT,
-            sales_order_no TEXT,
-            total_pages INTEGER DEFAULT 0,
-            annotated_pages INTEGER DEFAULT 0,
-            total_punches INTEGER DEFAULT 0,
-            open_punches INTEGER DEFAULT 0,
-            implemented_punches INTEGER DEFAULT 0,
-            closed_punches INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'quality_inspection',
-            created_date TEXT,
-            last_updated TEXT,
-            storage_location TEXT,
-            excel_path TEXT
-        )''')
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS category_occurrences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cabinet_id TEXT,
-            project_name TEXT,
-            category TEXT,
-            subcategory TEXT,
-            occurrence_date TEXT
-        )''')
-        
-        # Add columns if they don't exist
-        try:
-            cursor.execute('ALTER TABLE cabinets ADD COLUMN storage_location TEXT')
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute('ALTER TABLE cabinets ADD COLUMN excel_path TEXT')
-        except sqlite3.OperationalError:
-            pass
-        
-        conn.commit()
-        conn.close()
 
     def splitcell(self, cell_ref):
         """
@@ -234,6 +235,9 @@ class ManagerDB:
         Used by quality module to sync work progress with manager system.
         """
         try:
+            storage_location_db = to_relative_storage_location(storage_location)
+            excel_path_db = to_relative_path(excel_path)
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
@@ -248,7 +252,7 @@ class ManagerDB:
                         ?)
             ''', (cabinet_id, project_name, sales_order_no, total_pages, annotated_pages,
                   total_punches, open_punches, implemented_punches, closed_punches, status,
-                  storage_location, excel_path,
+                storage_location_db, excel_path_db,
                   cabinet_id, datetime.now().isoformat(), datetime.now().isoformat()))
             
             conn.commit()
@@ -334,8 +338,8 @@ class ManagerDB:
                     'implemented_punches': row[7],
                     'closed_punches': row[8],
                     'status': row[9],
-                    'storage_location': row[10],
-                    'excel_path': row[11],
+                    'storage_location': resolve_storage_location(row[10]),
+                    'excel_path': to_absolute_path(row[11]),
                     'created_date': row[12],
                     'last_updated': row[13]
                 }
@@ -755,20 +759,13 @@ class CircuitInspector:
     # ============================================================================
     def loadcat(self):
         """
-        Load category definitions from categories.json configuration file.
+        Load category definitions from PostgreSQL category tables.
         FUNCTIONAL USE: Populates self.categories with inspection categories, subcategories, and templates.
         Enables dynamic error classification and punch list generation based on categories.
         """
         try:
-            if os.path.exists(self.category_file):
-                with open(self.category_file, "r", encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.categories = data if isinstance(data, list) else []
-                    print(f" Loaded categories with automatic reference numbers")
-            else:
-                print(" Categories file not found")
-                self.categories = []
-                
+            self.categories = load_categories_from_postgres("inspection_tool")
+            print(" Loaded categories from PostgreSQL")
         except Exception as e:
             print(f" Error loading categories: {e}")
             self.categories = []
@@ -2405,18 +2402,17 @@ class CircuitInspector:
         
         # Load icons or use fallback
         try:
-            assets_dir = os.path.join(os.path.dirname(app_base()), "assets")
             icon_size = (44, 44)
             
-            pen_icon_path = os.path.join(assets_dir, "pen_icon.png")
+            pen_icon_path = asset_path("pen_icon.png")
             pen_img = Image.open(pen_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.pen_icon = ImageTk.PhotoImage(pen_img)
             
-            text_icon_path = os.path.join(assets_dir, "text_icon.png")
+            text_icon_path = asset_path("text_icon.png")
             text_img = Image.open(text_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.text_icon = ImageTk.PhotoImage(text_img)
             
-            undo_icon_path = os.path.join(assets_dir, "undo_icon.png")
+            undo_icon_path = asset_path("undo_icon.png")
             undo_img = Image.open(undo_icon_path).resize(icon_size, Image.Resampling.LANCZOS)
             self.undo_icon = ImageTk.PhotoImage(undo_img)
             
@@ -2812,15 +2808,32 @@ class CircuitInspector:
     # ================================================================
 
     def loadpdf(self):
-        """Load PDF - implement with your original logic"""
+        """Load PDF and persist it under central UNC storage."""
+        initial_pdf_dir = get_base_path()
+        if not os.path.isdir(initial_pdf_dir):
+            initial_pdf_dir = app_base()
+
         file_path = filedialog.askopenfilename(
             title="Select Circuit Diagram PDF",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialdir=initial_pdf_dir
         )
         if file_path:
             try:
-                self.pdf_document = fitz.open(file_path)
+                # Temporarily hold source path so OCR-assisted project dialog can read it.
                 self.current_pdf_path = file_path
+                self.askprojdetails()
+
+                if not self.preparefolders():
+                    return
+
+                central_pdf_path = self.copy_pdf_to_central_storage(file_path)
+
+                if self.pdf_document:
+                    self.pdf_document.close()
+
+                self.pdf_document = fitz.open(central_pdf_path)
+                self.current_pdf_path = central_pdf_path
                 self.current_page = 0
                 self.annotations = []
                 self.zoom_level = 1.0
@@ -2831,9 +2844,6 @@ class CircuitInspector:
                 self.current_sr_no = self.getnextsr()
                 self.display()
                 messagebox.showinfo("Success", f"Loaded PDF with {len(self.pdf_document)} pages")
-                
-                self.askprojdetails()
-                self.preparefolders()
 
                 try:
                     self.working_excel_path = os.path.join(
@@ -2886,13 +2896,9 @@ class CircuitInspector:
                 messagebox.showerror("Error", f"Failed to load PDF: {str(e)}")
 
     def loadcat(self):
-        """Load categories from JSON"""
+        """Load categories from PostgreSQL."""
         try:
-            if os.path.exists(self.category_file):
-                with open(self.category_file, "r", encoding="utf-8") as f:
-                    self.categories = json.load(f)
-            else:
-                self.categories = []
+            self.categories = load_categories_from_postgres("inspection_tool")
         except Exception as e:
             print(f"Error loading categories: {e}")
             self.categories = []
@@ -3084,7 +3090,7 @@ class CircuitInspector:
         return project_names
 
     def askprojdetails(self):
-        """Ask for project details including storage location with OCR auto-fill"""
+        """Ask for project details while enforcing central storage policy."""
         
         # Extract OCR data from third page (index 2) if PDF is loaded
         ocr_text = ""
@@ -3134,29 +3140,46 @@ class CircuitInspector:
         so_var = tk.StringVar(value=getattr(self, 'sales_order_no', ''))
         tk.Entry(dlg, textvariable=so_var, font=('Segoe UI', 10)).pack(fill="x", padx=20)
 
-        # Storage Location Frame
+        # Storage Location (browseable, defaults to configured base path)
         tk.Label(dlg, text="Storage Location", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(15, 0))
-        
+
         location_frame = tk.Frame(dlg)
         location_frame.pack(fill="x", padx=20, pady=5)
-        
-        location_var = tk.StringVar(value=getattr(self, "storage_location", ""))
-        location_entry = tk.Entry(location_frame, textvariable=location_var, 
-                                 font=('Segoe UI', 9), state='readonly')
+
+        location_var = tk.StringVar(value=get_base_path())
+        location_entry = tk.Entry(location_frame, textvariable=location_var, font=('Segoe UI', 9), state='readonly')
         location_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
-        
+
         def browse_location():
-            folder = filedialog.askdirectory(
+            start_dir = location_var.get().strip() or get_base_path()
+            if not os.path.isdir(start_dir):
+                start_dir = get_base_path()
+            selected = filedialog.askdirectory(
                 title="Select Project Storage Location",
+                initialdir=start_dir,
                 mustexist=True
             )
-            if folder:
-                location_var.set(folder)
-        
-        browse_btn = tk.Button(location_frame, text="Browse...", command=browse_location,
-                              bg='#3b82f6', fg='white', font=('Segoe UI', 9, 'bold'),
-                              relief=tk.FLAT, padx=15, pady=5)
-        browse_btn.pack(side=tk.RIGHT)
+            if selected:
+                location_var.set(selected)
+
+        tk.Button(
+            location_frame,
+            text="Browse...",
+            command=browse_location,
+            bg='#3b82f6',
+            fg='white',
+            font=('Segoe UI', 9, 'bold'),
+            relief=tk.FLAT,
+            padx=15,
+            pady=5
+        ).pack(side=tk.RIGHT)
+
+        tk.Label(
+            dlg,
+            text="Start from base_path and choose the exact project folder.",
+            fg='#64748b',
+            font=('Segoe UI', 9)
+        ).pack(anchor="w", padx=20)
 
         # Auto-load location when project name changes
         def on_project_name_change(*args):
@@ -3170,7 +3193,7 @@ class CircuitInspector:
                     location_entry.config(bg='#dcfce7')  # Light green
                     dlg.after(1000, lambda: location_entry.config(bg='white'))
                 else:
-                    location_var.set("")
+                    location_var.set(get_base_path())
         
         # Tcl 9 compatibility: trace() is deprecated; use trace_add().
         project_var.trace_add('write', on_project_name_change)
@@ -3179,7 +3202,7 @@ class CircuitInspector:
             cabinet = cabinet_var.get().strip()
             project = project_var.get().strip()
             so = so_var.get().strip()
-            location = location_var.get().strip()
+            location = location_var.get().strip() or get_base_path()
             
             if not cabinet or not project:
                 messagebox.showerror("Missing Information", 
@@ -3212,11 +3235,8 @@ class CircuitInspector:
                                       f"Project '{project}' found.\n"
                                       f"Using existing location:\n{location}")
                 else:
-                    # Brand new project - must have location
-                    if not location:
-                        messagebox.showerror("Missing Location", 
-                                           "This is a new project. Please select a storage location.")
-                        return
+                    # Brand new project keeps user-selected location (default is base_path).
+                    location = location or get_base_path()
             
             self.cabinet_id = cabinet
             self.project_name = project
@@ -3229,8 +3249,6 @@ class CircuitInspector:
                 'project_name': self.project_name,
                 'sales_order_no': self.sales_order_no,
                 'storage_location': self.storage_location,
-                'pdf_path': self.current_pdf_path if hasattr(self, 'current_pdf_path') else None,
-                'excel_path': self.excel_file if hasattr(self, 'excel_file') else None,
                 'created_date': datetime.now().isoformat(),
                 'last_accessed': datetime.now().isoformat()
             })
@@ -3278,15 +3296,21 @@ class CircuitInspector:
             messagebox.showerror("Excel Error", f"Failed to write project details:\n{e}")
 
     def preparefolders(self):
-        """Prepare project folders at user-selected location
-        Structure: storage_location/project_name/cabinet_id/...
-        """
+        """Prepare project folders under configured UNC base_path."""
         if not hasattr(self, 'storage_location') or not self.storage_location:
-            messagebox.showerror("Error", "Storage location not set")
-            return False
+            self.storage_location = get_base_path()
         
         if not self.project_name or not self.cabinet_id:
             messagebox.showerror("Error", "Project name and Cabinet ID required")
+            return False
+
+        try:
+            # Enforce centrally managed UNC location and normalize to runtime absolute path.
+            self.storage_location = resolve_storage_location(
+                to_relative_storage_location(self.storage_location)
+            )
+        except ValueError as exc:
+            messagebox.showerror("Invalid Storage Path", str(exc))
             return False
         
         # Create structure: storage_location/project_name/cabinet_id/
@@ -3302,6 +3326,7 @@ class CircuitInspector:
         
         folders = {
             "root": cabinet_root,
+            "source_drawings": os.path.join(cabinet_root, "Source_Drawings"),
             "working_excel": os.path.join(cabinet_root, "Working_Excel"),
             "interphase_export": os.path.join(cabinet_root, "Interphase_Export"),
             "annotated_drawings": os.path.join(cabinet_root, "Annotated_Drawings"),
@@ -3313,6 +3338,26 @@ class CircuitInspector:
         
         self.project_dirs = folders
         return True
+
+    def copy_pdf_to_central_storage(self, source_pdf_path):
+        """Ensure selected PDF is stored inside the configured central project tree."""
+        if not source_pdf_path:
+            raise ValueError("No source PDF path provided")
+
+        source_drawings = self.project_dirs.get("source_drawings")
+        if not source_drawings:
+            raise ValueError("Project folders not prepared")
+
+        os.makedirs(source_drawings, exist_ok=True)
+        target_pdf_path = os.path.join(source_drawings, os.path.basename(source_pdf_path))
+
+        src_norm = os.path.normcase(os.path.normpath(source_pdf_path))
+        dst_norm = os.path.normcase(os.path.normpath(target_pdf_path))
+
+        if src_norm != dst_norm:
+            shutil.copy2(source_pdf_path, target_pdf_path)
+
+        return target_pdf_path
 
     def getpathforpdf(self):
         if not self.current_pdf_path:
@@ -5059,6 +5104,8 @@ class CircuitInspector:
             
             cursor.execute('SELECT status FROM cabinets WHERE cabinet_id = ?', (self.cabinet_id,))
             existing = cursor.fetchone()
+            excel_path_db = to_relative_path(self.excel_file)
+            storage_location_db = to_relative_storage_location(getattr(self, 'storage_location', None))
             
             if existing:
                 # Cabinet exists - get current status
@@ -5096,8 +5143,8 @@ class CircuitInspector:
                     WHERE cabinet_id = ?
                 ''', (total_pages, annotated_pages, total_punches, open_punches,
                       implemented_punches, closed_punches, current_status,
-                      datetime.now().isoformat(), self.excel_file, 
-                      getattr(self, 'storage_location', None), self.cabinet_id))
+                        datetime.now().isoformat(), excel_path_db,
+                        storage_location_db, self.cabinet_id))
                 
                 print(f"OK Updated {self.cabinet_id} - Status: {current_status}")
             else:
@@ -5120,7 +5167,7 @@ class CircuitInspector:
                     open_punches, implemented_punches, closed_punches,
                     initial_status, datetime.now().isoformat(),
                     datetime.now().isoformat(),
-                    getattr(self, 'storage_location', None), self.excel_file
+                    storage_location_db, excel_path_db
                 ))
                 
                 print(f"Created {self.cabinet_id} with status: {initial_status}")

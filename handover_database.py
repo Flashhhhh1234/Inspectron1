@@ -8,10 +8,12 @@ import pg_sqlite_compat as sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
 import os
+from path_policy import to_relative_path, to_absolute_path
 
 
 class HandoverDB:
     """Manages handover records between Quality and Production using PostgreSQL"""
+    _PATH_FIELDS = ("pdf_path", "excel_path", "session_path")
     
     def __init__(self, db_path: str = None):
         """Initialize database at specified path
@@ -23,85 +25,7 @@ class HandoverDB:
             db_path = "handover_db"
         
         self.db_path = db_path
-        self._init_tables()
         self._migrate_database()  # Apply any pending migrations
-    
-    def _init_tables(self):
-        """Create handover tables if they don't exist"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Quality to Production handover table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS quality_to_production (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cabinet_id TEXT NOT NULL,
-                project_name TEXT NOT NULL,
-                sales_order_no TEXT,
-                pdf_path TEXT,
-                excel_path TEXT,
-                session_path TEXT,
-                total_punches INTEGER DEFAULT 0,
-                open_punches INTEGER DEFAULT 0,
-                closed_punches INTEGER DEFAULT 0,
-                handed_over_by TEXT,
-                handed_over_date TEXT,
-                status TEXT DEFAULT 'pending',
-                received_by TEXT,
-                received_date TEXT,
-                completed_by TEXT,
-                completed_date TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Production to Quality handback table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS production_to_quality (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cabinet_id TEXT NOT NULL,
-                project_name TEXT NOT NULL,
-                sales_order_no TEXT,
-                pdf_path TEXT,
-                excel_path TEXT,
-                session_path TEXT,
-                rework_completed_by TEXT,
-                rework_completed_date TEXT,
-                production_remarks TEXT,
-                status TEXT DEFAULT 'pending',
-                verified_by TEXT,
-                verified_date TEXT,
-                verification_notes TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create indexes for faster lookups
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_qtp_cabinet 
-            ON quality_to_production(cabinet_id)
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_qtp_status 
-            ON quality_to_production(status)
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_ptq_cabinet 
-            ON production_to_quality(cabinet_id)
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_ptq_status 
-            ON production_to_quality(status)
-        ''')
-        
-        conn.commit()
-        conn.close()
-        print("[OK] Handover database tables initialized")
     
     def _migrate_database(self):
         """Apply database migrations for schema updates"""
@@ -139,6 +63,20 @@ class HandoverDB:
                 print(f"[OK] Migration: {msg}")
         
         conn.close()
+
+    def _serialize_paths(self, data: Dict) -> Dict:
+        normalized = dict(data or {})
+        for field in self._PATH_FIELDS:
+            if field in normalized:
+                normalized[field] = to_relative_path(normalized.get(field))
+        return normalized
+
+    def _resolve_paths(self, row: Dict) -> Dict:
+        resolved = dict(row or {})
+        for field in self._PATH_FIELDS:
+            if field in resolved:
+                resolved[field] = to_absolute_path(resolved.get(field))
+        return resolved
     
     # ================================================================
     # QUALITY TO PRODUCTION HANDOVER
@@ -166,6 +104,8 @@ class HandoverDB:
             bool: True if successful, False if already exists
         """
         try:
+            handover_data = self._serialize_paths(handover_data)
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
@@ -230,7 +170,7 @@ class HandoverDB:
             rows = cursor.fetchall()
             conn.close()
             
-            return [dict(row) for row in rows]
+            return [self._resolve_paths(dict(row)) for row in rows]
             
         except Exception as e:
             print(f"Error getting pending production items: {e}")
@@ -321,6 +261,8 @@ class HandoverDB:
             bool: True if successful
         """
         try:
+            handback_data = self._serialize_paths(handback_data)
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
@@ -379,7 +321,7 @@ class HandoverDB:
             rows = cursor.fetchall()
             conn.close()
             
-            return [dict(row) for row in rows]
+            return [self._resolve_paths(dict(row)) for row in rows]
             
         except Exception as e:
             print(f"Error getting pending quality items: {e}")
@@ -556,7 +498,7 @@ class HandoverDB:
             row = cursor.fetchone()
             conn.close()
             
-            return dict(row) if row else None
+            return self._resolve_paths(dict(row)) if row else None
             
         except Exception as e:
             print(f"Error getting item by cabinet ID: {e}")
@@ -595,8 +537,8 @@ class HandoverDB:
             conn.close()
             
             return {
-                'quality_to_production': [dict(row) for row in qtp_rows],
-                'production_to_quality': [dict(row) for row in ptq_rows]
+                'quality_to_production': [self._resolve_paths(dict(row)) for row in qtp_rows],
+                'production_to_quality': [self._resolve_paths(dict(row)) for row in ptq_rows]
             }
             
         except Exception as e:
