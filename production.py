@@ -631,10 +631,6 @@ class ProductionTool:
 
         return "break"
     
-    def updtoolpane(self):
-        """Placeholder for tool pane update - not needed in production mode"""
-        pass
-
     # ================================================================
     # LOAD FROM HANDOVER QUEUE - WITH AUTO-OPEN PRODUCTION MODE
     # ================================================================
