@@ -11,7 +11,7 @@ Inspectron1 is a desktop quality-inspection platform for electrical/control cabi
 - Manager-level dashboarding and Pareto analytics
 - Admin user maintenance
 
-The application is implemented as a Tkinter-based multi-module system where Login dispatches users to role-specific interfaces. The latest codebase has moved core persistence behavior to a PostgreSQL-backed compatibility layer, while retaining sqlite-style data-access code for minimal disruption.
+The application is implemented as a Tkinter-based multi-module system where Login dispatches users to role-specific interfaces. The latest codebase uses a PostgreSQL-backed sqlite-compatibility layer for persistence while retaining sqlite-style data-access patterns for minimal disruption.
 
 ---
 
@@ -80,7 +80,7 @@ Inspectron1 is launched from a single entry point and routed by role:
 ```text
 Login.py
   |
-  +-- Admin      -> In-process AdminPanel and user management dialogs
+  +-- Admin      -> In-process AdminPanel with role-tabbed inline user management
   +-- Quality    -> quality.py
   +-- Production -> production.py
   +-- Manager    -> manager.py
@@ -88,23 +88,24 @@ Login.py
 
 Key runtime behavior:
 
-- Login dispatches role scripts by passing username and full name as argv data
+- Login dispatches role scripts by spawning a new process and passing username/full-name argv data
 - In frozen distribution mode, bundled pages and assets are resolved via _MEIPASS-aware logic
-- In source mode, role modules are launched through the same login script with module arguments
+- In source mode, role modules are launched through Login.py with --module arguments and executed via runpy
 
 ### Data Architecture
 
-Inspectron1 uses three logical database keys, all routed through the compatibility layer:
+Inspectron1 uses three logical database keys, routed through the PostgreSQL compatibility layer:
 
-- inspection_tool: project records, recent projects, quality handovers, credential/category lookups
+- inspection_tool: project records, recent projects, quality_handovers, and credential/category lookups
 - manager: cabinet snapshots and category occurrence analytics
-- handover_db: queue lifecycle between quality and production
+- handover_db: explicit quality_to_production and production_to_quality queue lifecycle
 
 Important implementation detail:
 
 - pg_sqlite_compat.py keeps sqlite-like connect/cursor/execute semantics while translating SQL and placeholders for PostgreSQL
 - Logical db keys are interpreted as PostgreSQL schema names for search_path routing when non-public
 - category and credentials modules load schema hints from assets/postgres.json and use fully qualified table names where required
+- database_manager.py and handover_database.py both participate in handover lifecycle, but operate on different table sets
 
 ### Recent Codebase Changes
 
@@ -116,6 +117,8 @@ The current repository state reflects these notable updates:
 - Centralized storage path normalization with path_policy.py for base-path-safe relative persistence
 - File dialog fallback wrapper in filedialog_compat.py for environments where tkinter.filedialog is unavailable
 - Enhanced frozen-app handling for module loading and asset resolution in Login.py and role modules
+- Inline Admin panel row editing in Login.py (tabbed by role) replacing dialog-only user maintenance flow
+- Tesseract path auto-resolution expanded to environment variables, PATH, and common Windows/Linux/macOS install locations
 
 ---
 
@@ -153,8 +156,8 @@ Tesseract installation:
 2. Ensure PostgreSQL is accessible from the machine running the app.
 3. Verify that required database tables exist in the expected schema(s).
 4. Prepare runtime assets that are referenced by the UI but may not be committed in this repository snapshot:
-   - Emerson.xlsx (master template in application base directory)
-   - pen_icon.png, text_icon.png, undo_icon.png (assets folder)
+  - Emerson.xlsx (master template in application base directory)
+  - pen_icon.png, text_icon.png, undo_icon.png (assets folder, required by quality.py and production.py)
 5. Confirm OCR executable availability (PATH, TESSERACT_CMD, or default install path).
 6. Start from Login.py and authenticate with a valid role.
 
@@ -168,6 +171,7 @@ Inspectron1/
 ├── production.py
 ├── manager.py
 ├── database_manager.py
+├── Emerson.xlsx
 ├── handover_database.py
 ├── pg_sqlite_compat.py
 ├── category_store_pg.py
@@ -183,6 +187,12 @@ Inspectron1/
 ### Configure PostgreSQL and Base Path
 
 The application reads assets/postgres.json for schema and shared path metadata in supporting modules.
+
+Important current behavior:
+
+- pg_sqlite_compat.py currently uses fixed PostgreSQL connection constants in code
+- credentials_store_pg.py and category_store_pg.py use postgres.json schema metadata for fully qualified table access
+- path_policy.py uses base_path from postgres.json when present, otherwise falls back to an internal default UNC path
 
 Example:
 
@@ -205,6 +215,7 @@ Notes:
 - path_policy.py resolves persisted relative paths against base_path
 - values outside base_path are rejected when path-policy conversion is applied
 - pg_sqlite_compat.py currently contains fixed connection constants in code; align these with your deployment policy before production use
+- base_path is optional in postgres.json; if omitted, path_policy.py uses its internal DEFAULT_BASE_PATH
 
 ### Set Tesseract Path (Windows)
 
@@ -213,7 +224,7 @@ quality.py resolves OCR executable path in this order:
 1. TESSERACT_CMD environment variable
 2. TESSERACT_PATH environment variable
 3. tesseract found on PATH
-4. common install locations
+4. common install locations (including LOCALAPPDATA Programs folder, Program Files, /usr/bin, /usr/local/bin, and /opt/homebrew/bin)
 
 If needed, set an environment variable before launch:
 
@@ -251,8 +262,7 @@ Key functions:
 Primary classes:
 
 - LoginPage: login form and role routing trigger
-- AdminPanel: user list management surface
-- AddEditUserDialog: user creation/edit modal
+- AdminPanel: role-tabbed user list management surface with inline add/edit/delete/save operations
 
 ### 2. quality.py - Quality Inspection Workbench
 
@@ -324,7 +334,8 @@ Purpose:
 
 - Central manager for project metadata persistence and retrieval
 - Tracks recent projects
-- Maintains quality_handover records and status transitions
+- Maintains quality_handovers records and production/quality status transitions
+- Serializes persisted paths into relative form and resolves them back to absolute form at read-time
 
 Key methods include:
 
@@ -390,6 +401,7 @@ Purpose:
 - Reads active users from credential table
 - Upserts modified users and deletes removed entries
 - Provides a clean mapping format consumed by Login.py
+- Uses schema metadata from assets/postgres.json and raises migration-oriented runtime errors when credential tables are missing
 
 ### 10. path_policy.py and filedialog_compat.py - Runtime Resilience Utilities
 
@@ -450,7 +462,7 @@ Purpose:
 ```text
 1. Login as Admin
 2. Open AdminPanel
-3. Add/edit/deactivate users through dialog actions
+3. Add/edit/deactivate users through inline table actions in role tabs
 4. Persist updates back to PostgreSQL credential storage
 ```
 
@@ -506,21 +518,27 @@ Representative function signatures and integration points:
 load_credentials() -> dict
 save_credentials(credentials: dict) -> None
 authenticate_user(username: str, password: str, credentials: dict) -> tuple
-route_to_role(username: str, full_name: str, role: str) -> None
+route_to_role(username: str, full_name: str, role: str) -> bool
 dispatch_from_args() -> bool
+
+# Quality OCR bootstrap
+configure_tesseract_cmd() -> str | None
 
 # Database manager
 DatabaseManager.add_project(project_data: dict) -> bool
 DatabaseManager.update_project(cabinet_id: str, updates: dict) -> bool
 DatabaseManager.get_project(cabinet_id: str) -> dict | None
 DatabaseManager.get_recent_projects(limit: int = 20) -> list[dict]
+DatabaseManager.search_projects(search_term: str) -> list[dict]
 
 # Handover queues
 HandoverDB.add_quality_handover(handover_data: dict) -> bool
 HandoverDB.get_pending_production_items() -> list[dict]
+HandoverDB.update_production_status(cabinet_id: str, status: str, user: str = None) -> bool
 HandoverDB.add_production_handback(handback_data: dict) -> bool
 HandoverDB.get_pending_quality_items() -> list[dict]
-HandoverDB.verify_production_item(...) -> bool
+HandoverDB.verify_production_item(cabinet_id: str, verified_by: str = None, verification_notes: str = None, mark_as_closed: bool = False) -> bool
+HandoverDB.remove_from_rework_queue(cabinet_id: str, removed_by: str = None, reason: str = None) -> bool
 
 # Category and credentials persistence
 load_categories_from_postgres(db_key: str = "inspection_tool") -> list[dict]
@@ -532,7 +550,9 @@ save_users_to_postgres(users: dict, db_key: str = "inspection_tool") -> None
 get_base_path(force_refresh: bool = False) -> str
 to_relative_path(path: str | None) -> str | None
 to_absolute_path(path: str | None) -> str | None
+to_relative_storage_location(storage_location: str | None) -> str
 resolve_storage_location(stored_value: str | None) -> str
+is_within_base_path(path: str | None) -> bool
 ```
 
 ---
@@ -544,12 +564,14 @@ resolve_storage_location(stored_value: str | None) -> str
 - openpyxl workbook operations can be slow on very large punch sheets
 - manager dashboard currently recalculates live punch counts from Excel for accuracy; this favors consistency over raw speed
 - network-path latency can impact storage and workbook access when base_path points to remote shares
+- queue and analytics queries can become expensive as tables grow; add indexing and cleanup policies for long-running deployments
 
 ---
 
 ## Security Notes
 
 - pg_sqlite_compat.py currently includes fixed PostgreSQL host/user/password values in code; move these to secure runtime secrets for production
+- assets/postgres.json is currently used for schema/base-path metadata, while core connection constants remain code-defined in pg_sqlite_compat.py
 - credentials are managed in database tables; enforce strong password policy and role governance externally
 - audit-sensitive session and workbook files should be stored on controlled-access storage
 - apply least-privilege database roles for runtime users
@@ -569,6 +591,6 @@ resolve_storage_location(stored_value: str | None) -> str
 
 ## Document Metadata
 
-Document Version: 2.0.0
-Last Updated: April 21, 2026
+Document Version: 2.1.0
+Last Updated: April 22, 2026
 Maintained By: Kshitij Palshikar
