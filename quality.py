@@ -753,24 +753,6 @@ class CircuitInspector:
         return "break"
 
 
-    # ============================================================================
-    # MODIFIED: handle_error_highlight with OCR pre-filled text
-    # Replace your existing handle_error_highlight method
-    # ============================================================================
-    def loadcat(self):
-        """
-        Load category definitions from PostgreSQL category tables.
-        FUNCTIONAL USE: Populates self.categories with inspection categories, subcategories, and templates.
-        Enables dynamic error classification and punch list generation based on categories.
-        """
-        try:
-            self.categories = load_categories_from_postgres("inspection_tool")
-            print(" Loaded categories from PostgreSQL")
-        except Exception as e:
-            print(f" Error loading categories: {e}")
-            self.categories = []
-
-
     """
     Enhanced High-Resolution OCR Extraction
     Captures ANY size highlight, intelligently expands it, sharpens, and extracts text
@@ -1167,51 +1149,6 @@ class CircuitInspector:
         x = self.root.winfo_pointerx()
         y = self.root.winfo_pointery()
         menu.tk_popup(x, y)
-
-
-    # ============================================================================
-    # MODIFIED: Template running with OCR pre-fill
-    # Add this helper method to your class
-    # ============================================================================
-
-    def runtemp(self, template_def, tag_name=None, prefill_text=None):
-        """
-        Execute a template definition with OCR text pre-filled into first input field.
-        FUNCTIONAL USE: Formats error description using template with values from inputs and OCR.
-        Enables semi-automated punch list generation with user customization.
-        Args: template_def - Template config, tag_name - Category tag, prefill_text - OCR text to pre-fill
-        Returns: str - Formatted template text or None if cancelled
-        """
-        values = {}
-        if tag_name:
-            values["tag"] = tag_name
-
-        inputs = template_def.get("inputs", [])
-        
-        for i, inp in enumerate(inputs):
-            # Pre-fill first input with OCR text if available
-            initial_value = ""
-            if i == 0 and prefill_text:
-                initial_value = prefill_text
-                print(f"Pre-filling with OCR text: '{prefill_text[:50]}...'")
-            
-            val = simpledialog.askstring(
-                "Input Required", 
-                inp["label"], 
-                parent=self.root,
-                initialvalue=initial_value  #Pre-filled!
-            )
-            
-            if not val:
-                return None
-            values[inp["name"]] = val.strip()
-
-        try:
-            return template_def["template"].format(**values)
-        except KeyError as e:
-            messagebox.showerror("Template Error", f"Missing placeholder: {e}")
-            return None
-
 
     # ============================================================================
     # MODIFIED: Handler methods with OCR support
@@ -3701,82 +3638,6 @@ class CircuitInspector:
                 pass
             return (None, 0.0, None)
 
-    
-    # ================================================================
-    # VIEW PRODUCTION HANDBACK ITEMS
-    # ================================================================
-
-    def syncstatsmgr(self):
-        """Sync current cabinet statistics to manager database WITHOUT changing status"""
-        if not self.pdf_document or not self.cabinet_id:
-            return
-        
-        try:
-            # Count pages with annotations
-            annotated_pages = len(set(ann['page'] for ann in self.annotations if ann.get('page') is not None))
-            total_pages = len(self.pdf_document)
-            
-            # Count punches by type
-            error_anns = [a for a in self.annotations if a.get('type') == 'error']
-            total_punches = len(error_anns)
-            
-            # Count from Excel for accuracy
-            open_punches = self.countopen()
-            
-            # Count implemented (has implemented_name but no closed_name)
-            implemented_punches = 0
-            closed_punches = 0
-            
-            if self.excel_file and os.path.exists(self.excel_file):
-                try:
-                    from openpyxl import load_workbook
-                    wb = load_workbook(self.excel_file, data_only=True)
-                    ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
-                    
-                    row = 8
-                    while row <= ws.max_row + 5:
-                        sr = self.readcell(ws, row, self.punch_cols['sr_no'])
-                        if sr is None:
-                            break
-                        
-                        implemented = self.readcell(ws, row, self.punch_cols['implemented_name'])
-                        closed = self.readcell(ws, row, self.punch_cols['closed_name'])
-                        
-                        if closed:
-                            closed_punches += 1
-                        elif implemented:
-                            implemented_punches += 1
-                        
-                        row += 1
-                    
-                    wb.close()
-                except:
-                    pass
-            
-            # FIXED: Get existing status from database, don't override it
-            existing_status = self.get_current_status_from_db()
-            
-            # Update manager database with EXISTING status preserved
-            self.manager_db.updatecab(
-                self.cabinet_id,
-                self.project_name,
-                self.sales_order_no,
-                total_pages,
-                annotated_pages,
-                total_punches,
-                open_punches,
-                implemented_punches,
-                closed_punches,
-                existing_status,  # CHANGED: Use existing status instead of hardcoded 'quality_inspection'
-                storage_location=getattr(self, 'storage_location', None),
-                excel_path=self.excel_file
-            )
-        except Exception as e:
-            print(f"Manager sync error: {e}")
-            import traceback
-            traceback.print_exc()
-
-            
     # ============================================================================
     # UPDATED: view_production_handbacks - Auto-open punch closing
     # ============================================================================
@@ -3983,96 +3844,6 @@ class CircuitInspector:
         except Exception as e:
             print(f"Error checking checklist completion: {e}")
             return (True, 0)  # Assume complete on error
-
-
-    def autofin(self):
-        """Automatically finalize cabinet if all punches are closed
-        
-        This checks:
-        1. Zero open punches
-        2. All checklist items reviewed
-        3. Then saves Excel, exports PDF, updates status to 'Closed'
-        """
-        if not self.pdf_document or not self.cabinet_id:
-            return
-        
-        # Check open punches
-        open_punches = self.countopen()
-        
-        if open_punches > 0:
-            print(f"Cannot auto-finalize: {open_punches} open punch(es) remaining")
-            return
-        
-        print(" All punches closed - checking checklist...")
-        
-        # Check checklist completion
-        is_complete, pending_count = self.checklistcomp()
-        
-        if not is_complete:
-            print(f"Checklist incomplete: {pending_count} item(s) pending")
-            
-            # Ask user if they want to complete checklist now
-            proceed = messagebox.askyesno(
-                "Checklist Incomplete",
-                f"{pending_count} checklist item(s) not reviewed.\n\n"
-                "Would you like to complete the checklist now?",
-                icon='warning'
-            )
-            
-            if proceed:
-                # Open checklist review dialog
-                self.reviewnow()
-                
-                # After review, check again
-                is_complete, pending_count = self.checklistcomp()
-                
-                if not is_complete:
-                    messagebox.showinfo(
-                        "Checklist Still Incomplete",
-                        "Cabinet cannot be finalized until checklist is complete."
-                    )
-                    return
-            else:
-                return
-        
-        print("OK Checklist complete - auto-finalizing cabinet...")
-        
-        try:
-            # 1. Save session
-            self.savesession()
-            
-            # 2. Save Interphase Excel
-            interphase_path = os.path.join(
-                self.project_dirs["interphase_export"],
-                f"{self.cabinet_id.replace(' ', '_')}_Interphase.xlsx"
-            )
-            
-            try:
-                shutil.copy2(self.excel_file, interphase_path)
-                
-            except Exception as e:
-                
-            
-                # 3. Export annotated PDF
-                self.exportpdf()
-                print("Annotated PDF exported")
-                
-                # 4. Update status to Closed
-                self.update_status_and_sync('closed')
-                print("Status updated to: Closed")
-                
-                # 5. Show success message
-                messagebox.showinfo(
-                    "Cabinet Finalized",
-                    "• Status: Closed",
-                    icon='info'
-                )
-                
-        except Exception as e:
-            messagebox.showerror("Finalization Error", f"Failed to finalize cabinet:\n{e}")
-            import traceback
-            traceback.print_exc()
-
 
     # UPDATED: punch_closing_mode - with auto-finalization
     def punchclosing(self):
@@ -4607,37 +4378,6 @@ class CircuitInspector:
         # Close the application
         self.root.destroy()
 
-    def countopen(self):
-        """Count open punches"""
-        try:
-            if not self.excel_file or not os.path.exists(self.excel_file):
-                return 0
-            
-            wb = load_workbook(self.excel_file, data_only=True)
-            ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
-            
-            open_count = 0
-            row = 8
-            
-            while row <= ws.max_row + 5:
-                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
-                if sr is None:
-                    break
-                
-                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
-                if not closed:
-                    open_count += 1
-                
-                row += 1
-            
-            wb.close()
-            return open_count
-            
-        except Exception as e:
-            print(f"Error counting open punches: {e}")
-            return 0
-    
-
     def saverecentproj(self):
         """Save current project to database with storage location - HIGHLIGHTER VERSION"""
         if not self.current_pdf_path or not self.excel_file:
@@ -4795,41 +4535,6 @@ class CircuitInspector:
             messagebox.showerror("Error", f"Failed to load project:\n{e}")
             import traceback
             traceback.print_exc()
-
-
-    # ============================================================================
-    # UPDATED: count_open_punches - Now counts orange highlights as errors
-    # ============================================================================
-
-    def countopen(self):
-        """Count open punches in current Excel - HIGHLIGHTER VERSION"""
-        try:
-            if not self.excel_file or not os.path.exists(self.excel_file):
-                return 0
-            
-            wb = load_workbook(self.excel_file, data_only=True)
-            ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
-            
-            open_count = 0
-            row = 8
-            
-            while row <= ws.max_row + 5:
-                sr = self.readcell(ws, row, self.punch_cols['sr_no'])
-                if sr is None:
-                    break
-                
-                closed = self.readcell(ws, row, self.punch_cols['closed_name'])
-                if not closed:
-                    open_count += 1
-                
-                row += 1
-            
-            wb.close()
-            return open_count
-            
-        except Exception as e:
-            print(f"Error counting open punches: {e}")
-            return 0
 
     # ================================================================
     # COMPREHENSIVE STATUS AND STATISTICS MANAGEMENT
