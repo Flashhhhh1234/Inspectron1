@@ -51,7 +51,7 @@ def asset_path(filename):
     if getattr(sys, 'frozen', False):
         return os.path.join(getbase(), "assets", filename)
 
-    return os.path.join(os.path.dirname(getbase()), "assets", filename)
+    return os.path.join(getbase(), "assets", filename)
 
 
 class ManagerDB:

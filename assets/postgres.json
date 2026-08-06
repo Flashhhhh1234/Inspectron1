@@ -1,10 +1,11 @@
 {
   "postgres": {
-    "host": "localhost",
+    "host": "10.132.16.14",
     "port": 5432,
     "dbname": "inspection_tool",
-    "user": "postgres",
-    "password": "Kshitij@123",
-    "schema": "public"
+    "user": "inspection_app",
+    "password": "Emrsn#123",
+    "schema": "public",
+    "base_path": "\\\\innsk01-fs01\\iCenter\\Operations\\01_Projects"
   }
 }

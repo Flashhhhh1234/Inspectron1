@@ -96,7 +96,7 @@ def asset_path(filename):
     if getattr(sys, 'frozen', False):
         return os.path.join(app_base(), "assets", filename)
 
-    return os.path.join(os.path.dirname(app_base()), "assets", filename)
+    return os.path.join(app_base(), "assets", filename)
 
 
     
