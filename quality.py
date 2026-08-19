@@ -698,7 +698,6 @@ class CircuitInspector:
         self._busy_overlay = None  # modal loading overlay, see busy()/unbusy()
         self._zoom_render_after_id = None
         self._zoom_dropdown_updating = False
-        self._page_entry_updating = False
         self.uisetup()
         self.bind_global_keyboard_popup()   # <-- ADD THIS LINE
         self.current_sr_no = self.getnextsr()
@@ -838,13 +837,6 @@ class CircuitInspector:
         behaves like normal scrolling.
         Args: event - Tkinter mouse event with x, y coordinates
         """
-        # Canvas widget bindings return 'break', which prevents bind_all from
-        # seeing this press. Apply a pending page value before canvas handling.
-        if getattr(self, '_page_edit_active', False):
-            typed_page = self.page_var.get().strip()
-            self._page_edit_active = False
-            self._apply_captured_page_value(typed_page)
-            return "break"
 
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
@@ -3338,6 +3330,26 @@ class CircuitInspector:
         tools_menu.add_command(label="Punch Closing Mode", command=self.punchclosing, accelerator="Ctrl+Shift+P")
         tools_menu.add_command(label="Edit Existing Punch", command=self.editexistingpunch, accelerator="Ctrl+Shift+U")
         tools_menu.add_separator()
+
+        # Cabinet workspace actions are grouped separately from inspection tools.
+        # These actions become useful after the initial cabinet setup has been saved.
+        cabinet_menu = Menu(
+            tools_menu, tearoff=0, bg='#1e293b', fg='white',
+            activebackground='#3b82f6', activeforeground='white'
+        )
+        tools_menu.add_cascade(label="Cabinet Setup", menu=cabinet_menu)
+        cabinet_menu.add_command(
+            label="Select Different PDF...",
+            command=self.select_different_pdf,
+            accelerator="Ctrl+Shift+O"
+        )
+        cabinet_menu.add_command(
+            label="Edit Cabinet Details...",
+            command=self.edit_cabinet_details,
+            accelerator="Ctrl+Shift+D"
+        )
+
+        tools_menu.add_separator()
         tools_menu.add_command(label="Verify ", command=self.viewhandbacks, accelerator="Ctrl+Shift+V")
         
         # View Menu
@@ -3354,6 +3366,8 @@ class CircuitInspector:
         self.root.bind_all("<Control-U>", lambda e: self.editexistingpunch())
         self.root.bind_all("<Control-E>", lambda e: self.openxcl())
         self.root.bind_all("<Control-V>", lambda e: self.viewhandbacks())
+        self.root.bind_all("<Control-Shift-O>", lambda e: self.select_different_pdf())
+        self.root.bind_all("<Control-Shift-D>", lambda e: self.edit_cabinet_details())
         self.root.bind_all("<Escape>", lambda e: self.deactivate())
         self.root.bind_all("<Delete>", self._delete_selected_text_box)
         
@@ -3435,24 +3449,13 @@ class CircuitInspector:
         center_frame = tk.Frame(toolbar, bg='#1e293b')
         center_frame.pack(side=tk.LEFT, padx=20)
         
-        tk.Label(center_frame, text="Page:", bg='#1e293b', fg='white',
-                 font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(4, 3))
-        self.page_var = tk.StringVar(value="0")
-        self.page_entry = tk.Entry(center_frame, textvariable=self.page_var, width=5,
-                                   justify='center', font=('Segoe UI', 10, 'bold'))
-        self.page_entry.pack(side=tk.LEFT)
-        self.page_entry.bind('<FocusIn>', self._on_page_entry_focus)
-        self.page_entry.bind('<FocusOut>', self._on_page_entry_focus_out)
-        # Keep the outside-click hook as a secondary path for widgets that take
-        # focus unusually. The guarded FocusOut path is the reliable primary path.
-        # FocusOut alone is unreliable. This application-level click binding
-        # applies a typed page number whenever the click is outside the field.
-        self.root.bind_all('<ButtonPress-1>', self._apply_page_on_outside_click, add='+')
-        self.page_total_label = tk.Label(center_frame, text="/ 0", bg='#1e293b',
-                                         fg='white', font=('Segoe UI', 10, 'bold'))
-        self.page_total_label.pack(side=tk.LEFT, padx=(3, 10))
-        # Compatibility alias for older code paths that call page_label.config().
-        self.page_label = self.page_total_label
+        # Read-only page indicator. Page changes happen only through normal
+        # scrolling; direct page-number entry / skip-to-page navigation is removed.
+        self.page_label = tk.Label(
+            center_frame, text="Page: 0 / 0", bg='#1e293b', fg='white',
+            font=('Segoe UI', 10, 'bold')
+        )
+        self.page_label.pack(side=tk.LEFT, padx=(4, 10))
         
         # Tool section
         tool_frame = tk.Frame(toolbar, bg='#1e293b')
@@ -4204,13 +4207,6 @@ class CircuitInspector:
     # NAVIGATION AND ZOOM
     # ================================================================
 
-    def _on_page_entry_focus(self, event=None):
-        self._page_edit_active = True
-        try:
-            self.page_entry.selection_range(0, tk.END)
-        except tk.TclError:
-            pass
-
     def _widget_is_inside(self, widget, ancestor):
         """Return True when widget belongs to ancestor's Tk widget tree."""
         current = widget
@@ -4220,100 +4216,12 @@ class CircuitInspector:
             current = getattr(current, 'master', None)
         return False
 
-    def _on_page_entry_focus_out(self, event=None):
-        """Apply the captured page only if focus settles outside the toolbar."""
-        if not getattr(self, '_page_edit_active', False):
-            return
-
-        # Capture immediately, before any canvas/page callback can update page_var.
-        typed_value = self.page_var.get().strip()
-        self.root.after_idle(
-            lambda value=typed_value: self._finish_page_focus_out(value)
-        )
-
-    def _finish_page_focus_out(self, typed_value):
-        """Finish delayed page navigation after Tk assigns the new focus."""
-        if not getattr(self, '_page_edit_active', False):
-            return
-        try:
-            focused = self.root.focus_get()
-        except tk.TclError:
-            focused = None
-
-        # Do not apply while the user moves to another toolbar control.
-        if focused is not None and self._widget_is_inside(focused, self.toolbar):
-            return
-
-        self._page_edit_active = False
-        self._apply_captured_page_value(typed_value)
-
-    def _apply_page_on_outside_click(self, event=None):
-        """Apply the captured page value after a press outside the toolbar.
-
-        The value is captured before the canvas processes the same press. This
-        prevents scroll/page-refresh callbacks from replacing page_var before
-        navigation reads it.
-        """
-        if not getattr(self, '_page_edit_active', False):
-            return
-        if event is not None and self._widget_is_inside(event.widget, self.toolbar):
-            return
-
-        typed_value = self.page_var.get().strip()
-        self._page_edit_active = False
-        self.root.after_idle(
-            lambda value=typed_value: self._apply_captured_page_value(value)
-        )
-
-    def _apply_captured_page_value(self, typed_value):
-        """Validate and navigate using a page value captured before focus changed."""
-        if not self.pdf_document:
-            self._update_page_toolbar()
-            return
-        try:
-            requested = int(str(typed_value).strip())
-        except (TypeError, ValueError):
-            self._update_page_toolbar()
-            return
-
-        requested = max(1, min(len(self.pdf_document), requested))
-        target = requested - 1
-        self.current_page = target
-
-        # Navigate directly in the existing stacked layout when possible. This
-        # avoids an unnecessary complete PDF render just to change pages.
-        if self.page_layout and target < len(self.page_layout):
-            try:
-                region = self.canvas.cget('scrollregion').split()
-                total_height = float(region[3]) if len(region) == 4 else 1.0
-                target_y = self.page_layout[target]['y'] / max(1.0, total_height)
-                self.canvas.yview_moveto(max(0.0, min(1.0, target_y)))
-                self._update_page_toolbar()
-                return
-            except (tk.TclError, ValueError, IndexError):
-                pass
-
-        self.display(preserve_view=False)
-
     def _update_page_toolbar(self):
+        """Refresh the read-only current-page indicator."""
         total = len(self.pdf_document) if self.pdf_document else 0
         current = self.current_page + 1 if total else 0
-        self._page_entry_updating = True
-        try:
-            if hasattr(self, 'page_var'):
-                self.page_var.set(str(current))
-            if hasattr(self, 'page_total_label'):
-                self.page_total_label.config(text=f"/ {total}")
-        finally:
-            self._page_entry_updating = False
-
-    def goto_page_from_toolbar(self, event=None):
-        """Compatibility entrypoint for programmatic page navigation."""
-        self._page_edit_active = False
-        if self._page_entry_updating:
-            return "break"
-        self._apply_captured_page_value(self.page_var.get())
-        return "break"
+        if hasattr(self, 'page_label'):
+            self.page_label.config(text=f"Page: {current} / {total}")
 
     def prev(self):
         """
@@ -5105,6 +5013,373 @@ class CircuitInspector:
         # expected 02-Customer Inputs folder.
         return get_base_path()
 
+
+    def _cabinet_context_ready(self):
+        """Return True when the current workspace has saved cabinet details."""
+        if not (getattr(self, 'cabinet_id', '').strip() and
+                getattr(self, 'project_name', '').strip()):
+            messagebox.showwarning(
+                "Cabinet Not Set Up",
+                "Load a PDF and save the cabinet details first.",
+                parent=self.root
+            )
+            return False
+        return True
+
+    def _cabinet_project_has_annotations(self):
+        """Return True when this exact cabinet + project already owns annotations.
+
+        Check both live memory and the saved session so restarting the app cannot
+        bypass the PDF replacement lock.
+        """
+        cabinet_key = str(getattr(self, 'cabinet_id', '') or '').strip().casefold()
+        project_key = str(getattr(self, 'project_name', '') or '').strip().casefold()
+        if not cabinet_key or not project_key:
+            return False
+
+        if getattr(self, 'annotations', None):
+            return True
+
+        candidates = []
+        sessions_dir = (getattr(self, 'project_dirs', {}) or {}).get('sessions')
+        if sessions_dir:
+            candidates.append(os.path.join(sessions_dir, f"{self.cabinet_id}_annotations.json"))
+        try:
+            record = self.db.get_project(self.cabinet_id) or {}
+            saved_session = record.get('session_path')
+            if saved_session:
+                candidates.append(to_absolute_path(saved_session) or saved_session)
+        except Exception:
+            pass
+
+        checked = set()
+        for session_path in candidates:
+            if not session_path:
+                continue
+            normalized = os.path.normcase(os.path.abspath(session_path))
+            if normalized in checked or not os.path.isfile(session_path):
+                continue
+            checked.add(normalized)
+            try:
+                with open(session_path, 'r', encoding='utf-8') as session_file:
+                    data = json.load(session_file)
+                saved_cabinet = str(data.get('cabinet_id', '') or '').strip().casefold()
+                saved_project = str(data.get('project_name', '') or '').strip().casefold()
+                same_combination = saved_cabinet == cabinet_key and saved_project == project_key
+                if same_combination and data.get('annotations'):
+                    return True
+            except (OSError, ValueError, TypeError) as exc:
+                # Fail closed: an unreadable session must not permit replacing the
+                # source PDF and potentially orphaning existing annotations.
+                print(f"[WARN] Could not verify annotation session {session_path}: {exc}")
+                return True
+        return False
+
+    def select_different_pdf(self):
+        """Replace the drawing PDF only before this cabinet/project is annotated."""
+        if not self._cabinet_context_ready():
+            return
+        if self._cabinet_project_has_annotations():
+            messagebox.showwarning(
+                "PDF Change Locked",
+                f"The PDF cannot be changed because annotations already exist for:\n\n"
+                f"Cabinet ID: {self.cabinet_id}\nProject: {self.project_name}\n\n"
+                "Remove the annotations first, or create a new cabinet/project combination.",
+                parent=self.root
+            )
+            return
+
+        start_dir = os.path.dirname(getattr(self, 'current_pdf_path', '') or '')
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = get_base_path() if os.path.isdir(get_base_path()) else app_base()
+        selected = filedialog.askopenfilename(
+            title=f"Select a Different PDF for {self.cabinet_id}",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialdir=start_dir
+        )
+        if not selected:
+            return
+        try:
+            selected = os.path.abspath(selected)
+            if not os.path.isfile(selected):
+                raise FileNotFoundError(selected)
+            if (self.current_pdf_path and
+                    os.path.normcase(os.path.abspath(self.current_pdf_path)) ==
+                    os.path.normcase(selected)):
+                messagebox.showinfo("PDF Already Selected", "This PDF is already open.", parent=self.root)
+                return
+
+            self.busy("Preparing the new cabinet PDF...")
+            if not self.project_dirs or not self.project_dirs.get('source_drawings'):
+                if not self.preparefolders():
+                    return
+
+            central_path = self.copy_pdf_to_central_storage(selected)
+            new_document = fitz.open(central_path)
+            if len(new_document) == 0:
+                new_document.close()
+                raise ValueError("The selected PDF contains no pages.")
+
+            old_document = self.pdf_document
+            self.pdf_document = new_document
+            if old_document is not None:
+                try:
+                    old_document.close()
+                except Exception:
+                    pass
+
+            self.stopmultimark()
+            self.current_pdf_path = central_path
+            self.current_page = 0
+            self.annotations = []
+            self.undo_stack = []
+            self.session_refs = set()
+            self.zoom_level = 1.0
+            self._dirty = True
+            self._clear_page_render_cache()
+            self._update_zoom_toolbar_label()
+            self.deactivate()
+            self.display(preserve_view=False)
+
+            expected_session_path = os.path.join(
+                self.project_dirs['sessions'],
+                f"{self.cabinet_id}_annotations.json"
+            )
+            self.db.update_project(self.cabinet_id, {
+                'pdf_path': self.current_pdf_path,
+                'excel_path': self.excel_file,
+                'session_path': expected_session_path,
+                'storage_location': self.storage_location,
+                'last_accessed': datetime.now().isoformat()
+            })
+            self.saverecentproj()
+            self.flashstat("Cabinet PDF replaced successfully", bg='#2563eb')
+        except Exception as exc:
+            messagebox.showerror(
+                "PDF Replacement Failed",
+                f"Could not select the new PDF:\n\n{exc}",
+                parent=self.root
+            )
+        finally:
+            self.unbusy()
+
+    def _migrate_cabinet_id(self, old_id, new_id):
+        """Migrate local files and the inspection DB when a cabinet ID changes."""
+        old_id = str(old_id or '').strip()
+        new_id = str(new_id or '').strip()
+        if not old_id or not new_id or old_id == new_id:
+            return
+
+        # Save the old session before moving its folder.
+        self.flush_pending_saves(show_status=False)
+        old_dirs = dict(getattr(self, 'project_dirs', {}) or {})
+        old_root = old_dirs.get('root')
+        new_root = None
+        if old_root:
+            parent = os.path.dirname(old_root)
+            new_root = os.path.join(parent, new_id.replace(' ', '_'))
+            if os.path.exists(new_root):
+                raise FileExistsError(f"The target cabinet folder already exists: {new_root}")
+            if os.path.isdir(old_root):
+                os.rename(old_root, new_root)
+
+        self.cabinet_id = new_id
+        if new_root:
+            self.project_dirs = {
+                'root': new_root,
+                'source_drawings': os.path.join(new_root, 'Source_Drawings'),
+                'working_excel': os.path.join(new_root, 'Working_Excel'),
+                'interphase_export': os.path.join(new_root, 'Interphase_Export'),
+                'annotated_drawings': os.path.join(new_root, 'Annotated_Drawings'),
+                'sessions': os.path.join(new_root, 'Sessions')
+            }
+            def moved(path):
+                if not path:
+                    return path
+                try:
+                    rel = os.path.relpath(path, old_root)
+                    if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
+                        return os.path.join(new_root, rel)
+                except Exception:
+                    pass
+                return path
+            self.current_pdf_path = moved(self.current_pdf_path)
+            self.excel_file = moved(self.excel_file)
+            self.working_excel_path = moved(self.working_excel_path)
+
+            old_session = os.path.join(self.project_dirs['sessions'], f"{old_id}_annotations.json")
+            new_session = os.path.join(self.project_dirs['sessions'], f"{new_id}_annotations.json")
+            if os.path.isfile(old_session) and old_session != new_session:
+                os.rename(old_session, new_session)
+
+        old_record = self.db.get_project(old_id) or {}
+        new_record = dict(old_record)
+        new_record.update({
+            'cabinet_id': new_id,
+            'project_name': self.project_name,
+            'sales_order_no': self.sales_order_no,
+            'storage_location': self.storage_location,
+            'pdf_path': self.current_pdf_path,
+            'excel_path': self.excel_file,
+            'session_path': self.getpathforpdf(),
+            'last_accessed': datetime.now().isoformat()
+        })
+
+        # Prefer an atomic rename API when supplied by DatabaseManager.
+        if hasattr(self.db, 'rename_project'):
+            self.db.rename_project(old_id, new_id, new_record)
+        elif hasattr(self.db, 'update_cabinet_id'):
+            self.db.update_cabinet_id(old_id, new_id)
+            self.db.update_project(new_id, new_record)
+        else:
+            self.db.add_project(new_record)
+            if hasattr(self.db, 'delete_project'):
+                self.db.delete_project(old_id)
+            elif hasattr(self.db, 'remove_project'):
+                self.db.remove_project(old_id)
+
+        # Best-effort cleanup/migration in linked stores when their APIs support it.
+        for store in (getattr(self, 'manager_db', None), getattr(self, 'handover_db', None)):
+            if store is None:
+                continue
+            for method_name in ('rename_cabinet', 'rename_cabinet_id', 'update_cabinet_id'):
+                method = getattr(store, method_name, None)
+                if callable(method):
+                    method(old_id, new_id)
+                    break
+
+    def edit_cabinet_details(self):
+        """Show a modern editor for mutable cabinet metadata."""
+        if not self._cabinet_context_ready():
+            return
+
+        colors = {
+            'nav': '#0f172a', 'window': '#f1f5f9', 'card': '#ffffff',
+            'text': '#0f172a', 'muted': '#64748b', 'line': '#e2e8f0',
+            'primary': '#2563eb', 'success': '#059669'
+        }
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Edit Cabinet Details")
+        dlg.geometry("680x520")
+        dlg.minsize(620, 480)
+        dlg.configure(bg=colors['window'])
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        header = tk.Frame(dlg, bg=colors['nav'], height=86)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(header, text="Edit Cabinet Details", bg=colors['nav'], fg='white',
+                 font=('Segoe UI Semibold', 18, 'bold')).pack(anchor='w', padx=26, pady=(15, 1))
+        tk.Label(header, text="Update the saved cabinet information without reopening the drawing.",
+                 bg=colors['nav'], fg='#94a3b8', font=('Segoe UI', 10)).pack(anchor='w', padx=26)
+
+        card = tk.Frame(dlg, bg=colors['card'], highlightthickness=1,
+                        highlightbackground=colors['line'])
+        card.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
+
+        cabinet_var = tk.StringVar(value=self.cabinet_id)
+        project_var = tk.StringVar(value=self.project_name)
+        so_var = tk.StringVar(value=self.sales_order_no)
+        location_var = tk.StringVar(value=getattr(self, 'storage_location', ''))
+
+        def field(row, label, variable, readonly=False):
+            tk.Label(card, text=label.upper(), bg=colors['card'], fg=colors['muted'],
+                     font=('Segoe UI Semibold', 8, 'bold')).grid(
+                         row=row, column=0, sticky='w', padx=22, pady=(16, 4))
+            entry = tk.Entry(card, textvariable=variable, font=('Segoe UI', 11),
+                             relief=tk.FLAT, bg='#f8fafc', fg=colors['text'],
+                             readonlybackground='#e2e8f0')
+            entry.grid(row=row + 1, column=0, sticky='ew', padx=22, ipady=10)
+            if readonly:
+                entry.config(state='readonly')
+            return entry
+
+        cabinet_entry = field(0, "Cabinet ID", cabinet_var)
+        tk.Label(card, text="Changing the ID also migrates the cabinet folder, session, and saved paths.",
+                 bg=colors['card'], fg=colors['muted'], font=('Segoe UI', 8)).grid(
+                     row=2, column=0, sticky='w', padx=22, pady=(3, 0))
+        project_entry = field(3, "Project Name", project_var)
+        field(5, "Sales Order Number", so_var)
+        field(7, "Storage Location", location_var, readonly=True)
+        card.columnconfigure(0, weight=1)
+
+        footer = tk.Frame(dlg, bg=colors['window'])
+        footer.pack(fill=tk.X, padx=24, pady=(0, 20))
+
+        def save_details():
+            new_cabinet_id = cabinet_var.get().strip()
+            project = project_var.get().strip()
+            sales_order = so_var.get().strip()
+            if not new_cabinet_id:
+                messagebox.showwarning("Cabinet ID Required", "Enter a cabinet ID.", parent=dlg)
+                cabinet_entry.focus_force()
+                return
+            if not project:
+                messagebox.showwarning("Project Name Required", "Enter a project name.", parent=dlg)
+                project_entry.focus_force()
+                return
+            old_cabinet_id = self.cabinet_id
+            if new_cabinet_id != old_cabinet_id and self.db.project_exists(new_cabinet_id):
+                messagebox.showerror(
+                    "Cabinet ID Already Exists",
+                    f"Cabinet ID '{new_cabinet_id}' is already in use. Choose a unique ID.",
+                    parent=dlg
+                )
+                cabinet_entry.focus_force()
+                return
+            if new_cabinet_id != old_cabinet_id:
+                proceed = messagebox.askyesno(
+                    "Change Cabinet ID",
+                    f"Rename cabinet '{old_cabinet_id}' to '{new_cabinet_id}'?\n\n"
+                    "The cabinet folder, session file, Excel/PDF paths, and database record will be migrated.",
+                    parent=dlg,
+                    icon='warning'
+                )
+                if not proceed:
+                    return
+            try:
+                self.busy("Updating cabinet details...")
+                if new_cabinet_id != old_cabinet_id:
+                    self._migrate_cabinet_id(old_cabinet_id, new_cabinet_id)
+                self.project_name = project
+                self.sales_order_no = sales_order
+                project_data = {
+                    'cabinet_id': self.cabinet_id,
+                    'project_name': self.project_name,
+                    'sales_order_no': self.sales_order_no,
+                    'storage_location': self.storage_location,
+                    'pdf_path': self.current_pdf_path,
+                    'excel_path': self.excel_file,
+                    'session_path': self.getpathforpdf(),
+                    'last_accessed': datetime.now().isoformat()
+                }
+                if self.db.project_exists(self.cabinet_id):
+                    self.db.update_project(self.cabinet_id, project_data)
+                else:
+                    project_data['created_date'] = datetime.now().isoformat()
+                    self.db.add_project(project_data)
+                self.write_to_xcl()
+                self.mark_dirty()
+                self._write_session_file()
+                self.sync_manager_stats_only()
+                self.updrecentdropdwn()
+                dlg.destroy()
+                self.flashstat("Cabinet details updated", bg=colors['success'])
+            except Exception as exc:
+                messagebox.showerror("Update Failed", f"Could not update cabinet details:\n\n{exc}", parent=dlg)
+            finally:
+                self.unbusy()
+
+        tk.Button(footer, text="Cancel", command=dlg.destroy, bg='#64748b', fg='white',
+                  activebackground='#475569', activeforeground='white', relief=tk.FLAT,
+                  borderwidth=0, font=('Segoe UI Semibold', 10, 'bold'),
+                  padx=24, pady=11, cursor='hand2').pack(side=tk.RIGHT)
+        tk.Button(footer, text="Save Changes", command=save_details, bg=colors['primary'], fg='white',
+                  activebackground='#1d4ed8', activeforeground='white', relief=tk.FLAT,
+                  borderwidth=0, font=('Segoe UI Semibold', 10, 'bold'),
+                  padx=24, pady=11, cursor='hand2').pack(side=tk.RIGHT, padx=(0, 10))
+        project_entry.focus_force()
 
     def loadpdf(self):
         """Load PDF and persist it under central UNC storage."""
