@@ -1,5 +1,12 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+
+try:
+    import customtkinter as ctk
+except ImportError as exc:
+    raise RuntimeError(
+        "CustomTkinter is required. Install it with: pip install customtkinter>=5.2.2"
+    ) from exc
 from PIL import Image, ImageTk
 import json
 import os
@@ -475,8 +482,12 @@ class ManagerUI:
         - Excel template paths
         """
         self.root = root
+        ctk.set_appearance_mode("Light")
+        ctk.set_default_color_theme("blue")
         self.root.title("Manager Dashboard")
         self.root.geometry("1600x900")
+        self.root.minsize(1180, 720)
+        self.root.configure(fg_color="#eef2f7")
         
         base_dir = getbase()
         self.db = ManagerDatabase("manager")
@@ -490,6 +501,7 @@ class ManagerUI:
         self._analytics_filter_after = None
         self._analytics_chart_canvas = None
         self._analytics_chart_figure = None
+        self._analytics_hover_cid = None
         self._analytics_placeholder = "Search projects or select filters..."
         
         self.uisetup()
@@ -519,62 +531,82 @@ class ManagerUI:
             messagebox.showerror("Error", f"Failed to save:\n{e}")
     
     def uisetup(self):
-        """
-        Construct the main application layout.
-    
-        Includes:
-        - Top navigation bar
-        - Content container
-        - Navigation buttons
-        """
-        
-        # Navigation
-        nav = tk.Frame(self.root, bg='#1e293b', height=70)
-        nav.pack(side=tk.TOP, fill=tk.X)
-        nav.pack_propagate(False)
-        
-        tk.Label(nav, text="📊 Manager Dashboard", bg='#1e293b', fg='white',
-                font=('Segoe UI', 18, 'bold')).pack(side=tk.LEFT, padx=30, pady=15)
-        
-        btn_style = {'font': ('Segoe UI', 11, 'bold'), 'relief': tk.FLAT,
-                    'cursor': 'hand2', 'padx': 25, 'pady': 12}
-        
+        """Construct the modern CustomTkinter application shell."""
+        # A CTk shell provides DPI-aware scaling, rounded controls and consistent
+        # colours. Existing data-entry screens remain compatible because normal
+        # Tk/ttk widgets can safely be nested inside CTk containers.
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(1, weight=1)
+
+        sidebar = ctk.CTkFrame(
+            self.root, width=235, corner_radius=0,
+            fg_color="#0f172a", border_width=0
+        )
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
+        sidebar.grid_rowconfigure(7, weight=1)
+
+        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="ew", padx=18, pady=(24, 26))
+        ctk.CTkLabel(
+            brand, text="MANAGER", text_color="#93c5fd",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            brand, text="Operations Hub", text_color="#f8fafc",
+            font=ctk.CTkFont(family="Segoe UI", size=21, weight="bold")
+        ).pack(anchor="w", pady=(2, 0))
+
         self.nav_btns = {}
-        self.nav_btns['dashboard'] = tk.Button(nav, text="Dashboard",
-                                               command=self.dashboard,
-                                               bg='#3b82f6', fg='white', **btn_style)
-        self.nav_btns['dashboard'].pack(side=tk.LEFT, padx=5)
-        
-        self.nav_btns['analytics'] = tk.Button(nav, text="Analytics",
-                                               command=self.analytics,
-                                               bg='#334155', fg='white', **btn_style)
-        self.nav_btns['analytics'].pack(side=tk.LEFT, padx=5)
-        
-        # RENAMED: Categories -> Defect Library
-        self.nav_btns['defect_library'] = tk.Button(nav, text="Defect Library",
-                                                command=self.showdfctlib,
-                                                bg='#334155', fg='white', **btn_style)
-        self.nav_btns['defect_library'].pack(side=tk.LEFT, padx=5)
-        
-        # NEW: Template Excel Editor
-        self.nav_btns['template_editor'] = tk.Button(nav, text="Template Excel",
-                                                command=self.templatexcleditor,
-                                                bg='#334155', fg='white', **btn_style)
-        self.nav_btns['template_editor'].pack(side=tk.LEFT, padx=5)
-        
-        # Content frame
-        self.content = tk.Frame(self.root, bg='#f8fafc')
-        self.content.pack(fill=tk.BOTH, expand=True)
-    
+        nav_items = (
+            ("dashboard", "Dashboard", self.dashboard),
+            ("analytics", "Analytics", self.analytics),
+            ("defect_library", "Defect Library", self.showdfctlib),
+            ("template_editor", "Template Excel", self.templatexcleditor),
+        )
+        for row, (key, label, command) in enumerate(nav_items, start=1):
+            button = ctk.CTkButton(
+                sidebar, text=label, command=command, height=44,
+                corner_radius=10, anchor="w",
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                fg_color="transparent", hover_color="#1e3a5f",
+                text_color="#cbd5e1", border_spacing=12
+            )
+            button.grid(row=row, column=0, sticky="ew", padx=14, pady=4)
+            self.nav_btns[key] = button
+
+        ctk.CTkLabel(
+            sidebar, text="Quality & Production", text_color="#64748b",
+            font=ctk.CTkFont(family="Segoe UI", size=10)
+        ).grid(row=8, column=0, padx=22, pady=20, sticky="sw")
+
+        self.content = ctk.CTkFrame(
+            self.root, corner_radius=0, fg_color="#eef2f7", border_width=0
+        )
+        self.content.grid(row=0, column=1, sticky="nsew")
+
+        # Improve the remaining ttk controls without rewriting stable dialogs.
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TCombobox", padding=7, font=("Segoe UI", 10))
+        style.configure("Treeview", rowheight=30, font=("Segoe UI", 10),
+                        background="#ffffff", fieldbackground="#ffffff")
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"),
+                        background="#e2e8f0", foreground="#334155")
+
     def activenav(self, key):
-        """
-        Highlight the active navigation button.
-    
-        Provides visual feedback for the current view.
-        """
-        for k, btn in self.nav_btns.items():
-            btn.config(bg='#3b82f6' if k == key else '#334155')
-    
+        """Highlight the active CustomTkinter navigation control."""
+        for name, button in self.nav_btns.items():
+            active = name == key
+            button.configure(
+                fg_color="#2563eb" if active else "transparent",
+                hover_color="#1d4ed8" if active else "#1e3a5f",
+                text_color="#ffffff" if active else "#cbd5e1"
+            )
+
     def clearcont(self):
         """
         Remove all widgets from the content area.
@@ -993,20 +1025,24 @@ class ManagerUI:
                 if matches:
                     for match in matches[:5]:
                         suggestion_listbox.insert(tk.END, match)
-                    suggestion_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+                    suggestion_frame.place(relx=0.02, rely=0.30, relwidth=0.96)
+                    suggestion_frame.lift()
                 else:
-                    suggestion_frame.pack_forget()
+                    suggestion_frame.place_forget()
             else:
-                suggestion_frame.pack_forget()
+                suggestion_frame.place_forget()
 
-            schedule_filter_apply(220)
+            # Do not rebuild the chart while typing. The old behaviour repeatedly
+            # destroyed/recreated the Matplotlib canvas and made the view shake.
+            filter_status_var.set("Choose a suggestion or press Enter to search.")
         
         def select_suggestion(event):
             if suggestion_listbox.curselection():
                 selected = suggestion_listbox.get(suggestion_listbox.curselection())
                 search_var.set(selected)
-                suggestion_frame.pack_forget()
-                apply_filters()
+                suggestion_frame.place_forget()
+                search_entry.focus_set()
+                self.root.after_idle(apply_filters)
         
         suggestion_listbox.pack(fill=tk.X, padx=10, pady=5)
         suggestion_listbox.bind('<<ListboxSelect>>', select_suggestion)
@@ -1215,160 +1251,195 @@ class ManagerUI:
         end_date_entry.bind("<Return>", lambda e: apply_filters())
 
     def updtchartforfilter(self, start_date, end_date, project, level, show_problematic_only=False):
-        """
-        Generate and render a Pareto chart based on active filters.
-    
-        Highlights the top 80% contributing categories
-        using cumulative frequency analysis.
-        """
-        # Clear previous chart
-        if self._analytics_chart_figure is not None:
-            plt.close(self._analytics_chart_figure)
-            self._analytics_chart_figure = None
+        """Render an interactive 2D Pareto chart without UI layout jitter."""
+        old_canvas = self._analytics_chart_canvas
+        old_figure = self._analytics_chart_figure
+        if old_canvas is not None and self._analytics_hover_cid is not None:
+            try:
+                old_canvas.mpl_disconnect(self._analytics_hover_cid)
+            except Exception:
+                pass
+        self._analytics_hover_cid = None
         self._analytics_chart_canvas = None
+        self._analytics_chart_figure = None
 
-        for w in self.chart_frame.winfo_children():
-            w.destroy()
-        
+        if old_canvas is not None:
+            try:
+                old_canvas.get_tk_widget().destroy()
+            except tk.TclError:
+                pass
+        if old_figure is not None:
+            old_figure.clear()
+            plt.close(old_figure)
+        for widget in self.chart_frame.winfo_children():
+            widget.destroy()
+
+        def show_empty(title, detail):
+            panel = tk.Frame(self.chart_frame, bg='white')
+            panel.place(relx=0.5, rely=0.5, anchor='center')
+            tk.Label(panel, text=title, font=('Segoe UI', 13, 'bold'),
+                     fg='#334155', bg='white').pack(pady=(0, 6))
+            tk.Label(panel, text=detail, font=('Segoe UI', 10),
+                     fg='#94a3b8', bg='white').pack()
+
         stats = self.db.getcatstats(start_date, end_date, project)
-        
         if not stats:
-            empty_frame = tk.Frame(self.chart_frame, bg='white')
-            empty_frame.place(relx=0.5, rely=0.5, anchor='center')
-            
-            tk.Label(empty_frame, text="No data available for the selected filters.",
-                    font=('Segoe UI', 12), fg='#64748b', bg='white').pack(pady=5)
-            tk.Label(empty_frame, 
-                    text="Category data will appear once Quality Inspection logs punches.",
-                    font=('Segoe UI', 10), fg='#94a3b8', bg='white').pack(pady=5)
+            show_empty('No data available',
+                       'Choose a listed project or try a different date range.')
+            self.current_chart_data = {}
             return
-        
+
         counts = defaultdict(int)
-        if level == "category":
-            for item in stats:
-                counts[item['category']] += item['count']
-        else:
-            # For subcategory, treat each unique subcategory independently
-            for item in stats:
-                key = f"{item['category']} → {item['subcategory'] or 'N/A'}"
-                counts[key] += item['count']
-        
-        # Sort ALL items by count in descending order
-        sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:15]
-        labels = [item[0] for item in sorted_items]
-        values = [item[1] for item in sorted_items]
-        
-        # Calculate total from ALL sorted items
-        total = sum(values)
-        if total == 0:
-            empty_frame = tk.Frame(self.chart_frame, bg='white')
-            empty_frame.place(relx=0.5, rely=0.5, anchor='center')
-            tk.Label(empty_frame, text="No measurable frequency found for selected filters.",
-                font=('Segoe UI', 12), fg='#64748b', bg='white').pack(pady=5)
-            return
-        
-        # Calculate cumulative percentage for these sorted items
-        cumulative = []
-        cum = 0
-        for v in values:
-            cum += v
-            cumulative.append((cum/total)*100)
-        
-        # Calculate 80% threshold index - find where cumulative first reaches or exceeds 80%
-        # This is based on the SORTED (descending) order, regardless of category grouping
-        threshold_80_idx = None
-        for i, cum_pct in enumerate(cumulative):
-            if cum_pct >= 80:
-                threshold_80_idx = i
-                break
-        
-        # If no item reaches 80%, then all items are problematic
-        if threshold_80_idx is None and len(cumulative) > 0:
-            threshold_80_idx = len(cumulative) - 1
-        
-        # Filter to show only problematic if checkbox is checked
-        if show_problematic_only and threshold_80_idx is not None:
-            labels = labels[:threshold_80_idx + 1]
-            values = values[:threshold_80_idx + 1]
-            # Recalculate cumulative for filtered data
-            cumulative = []
-            cum = 0
-            filtered_total = sum(values)
-            for v in values:
-                cum += v
-                cumulative.append((cum/filtered_total)*100)
-            # Update threshold for filtered data
-            threshold_80_idx = None
-            for i, cum_pct in enumerate(cumulative):
-                if cum_pct >= 80:
-                    threshold_80_idx = i
-                    break
-            if threshold_80_idx is None and len(cumulative) > 0:
-                threshold_80_idx = len(cumulative) - 1
-        
-        fig = Figure(figsize=(14, 7), facecolor='white')
-        ax1 = fig.add_subplot(111)
-        ax2 = ax1.twinx()
-        
-        # Color bars: red for problematic (up to and including 80% threshold), blue for rest
-        # This applies INDEPENDENTLY to each item based on its position in descending order
-        bar_colors = []
-        for i in range(len(labels)):
-            if threshold_80_idx is not None and i <= threshold_80_idx:
-                bar_colors.append('#ef4444')  # Red for problematic (within 80% cumulative)
+        for item in stats:
+            value = int(item.get('count') or 0)
+            if level == 'category':
+                key = str(item.get('category') or 'Uncategorised')
             else:
-                bar_colors.append('#3b82f6')  # Blue for non-problematic (beyond 80%)
-        
-        bars = ax1.bar(range(len(labels)), values, color=bar_colors, alpha=0.7, edgecolor='black', linewidth=0.5)
-        line = ax2.plot(range(len(labels)), cumulative, color='#f59e0b',
-                       marker='o', linewidth=2, markersize=6, label='Cumulative %')
-        ax2.axhline(y=80, color='#10b981', linestyle='--', linewidth=1.5, alpha=0.7, label='80% threshold')
-        
-        ax1.set_xlabel('Category', fontsize=11, fontweight='bold')
-        ax1.set_ylabel('Frequency', fontsize=11, fontweight='bold', color='#1e293b')
-        ax2.set_ylabel('Cumulative %', fontsize=11, fontweight='bold', color='#f59e0b')
-        
-        # Add filter info to title
-        filter_text = f"{level.title()} Analysis"
-        if project:
-            filter_text += f" - {project}"
-        
-        # Add problematic count to title
-        problematic_count = (threshold_80_idx + 1) if threshold_80_idx is not None else 0
-        total_count = len(labels)
-        ax1.set_title(f'Pareto Chart - {filter_text}\n'
-                     f'({problematic_count}/{total_count} categories represent 80% of issues)',
-                     fontsize=14, fontweight='bold')
-        
-        ax1.set_xticks(range(len(labels)))
-        ax1.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-        ax1.tick_params(axis='y', labelcolor='#1e293b')
-        ax2.tick_params(axis='y', labelcolor='#f59e0b')
-        ax2.set_ylim(0, 105)
-        ax2.legend(loc='lower right')
-        ax1.grid(axis='y', alpha=0.3, linestyle='--')
-        
-        fig.tight_layout()
-        
-        canvas = FigureCanvasTkAgg(fig, self.chart_frame)
+                key = '{} -> {}'.format(
+                    item.get('category') or 'Uncategorised',
+                    item.get('subcategory') or 'N/A'
+                )
+            counts[key] += value
+
+        ranked = sorted(((k, v) for k, v in counts.items() if v > 0),
+                        key=lambda pair: pair[1], reverse=True)
+        grand_total = sum(value for _, value in ranked)
+        if not ranked or grand_total <= 0:
+            show_empty('No measurable frequency',
+                       'The selected records contain no positive counts.')
+            self.current_chart_data = {}
+            return
+
+        running = 0
+        threshold_80_idx = len(ranked) - 1
+        threshold_found = False
+        for index, (_, value) in enumerate(ranked):
+            running += value
+            if not threshold_found and running / grand_total * 100 >= 80:
+                threshold_80_idx = index
+                threshold_found = True
+
+        if show_problematic_only:
+            displayed = ranked[:threshold_80_idx + 1]
+        else:
+            displayed = ranked[:11]
+            remainder = sum(v for _, v in ranked[11:])
+            if remainder:
+                displayed.append(('Other categories', remainder))
+
+        labels = [name for name, _ in displayed]
+        values = [value for _, value in displayed]
+        cumulative, running = [], 0
+        for value in values:
+            running += value
+            cumulative.append(running / grand_total * 100)
+
+        self.chart_frame.update_idletasks()
+        width_px = max(self.chart_frame.winfo_width(), 900)
+        height_px = max(self.chart_frame.winfo_height(), 590)
+        fig = Figure(figsize=(width_px / 100, height_px / 100), dpi=100,
+                     facecolor='white', constrained_layout=True)
+        grid = fig.add_gridspec(2, 1, height_ratios=(3.35, 1.25), hspace=0.05)
+        axbar = fig.add_subplot(grid[0])
+        axline = fig.add_subplot(grid[1], sharex=axbar)
+
+        x = list(range(len(labels)))
+        ranked_index = {name: i for i, (name, _) in enumerate(ranked)}
+        colors = []
+        for label in labels:
+            idx = ranked_index.get(label)
+            if label == 'Other categories':
+                colors.append('#94a3b8')
+            elif idx is not None and idx <= threshold_80_idx:
+                colors.append('#f97316')
+            else:
+                colors.append('#2563eb')
+
+        bars = axbar.bar(x, values, width=0.68, color=colors,
+                         edgecolor='white', linewidth=0.7, alpha=0.96)
+        axbar.set_ylabel('Number of issues', fontsize=9, color='#334155')
+        axbar.set_xticks(x)
+        axbar.set_xticklabels(labels, fontsize=8, rotation=35, ha='right')
+        axbar.set_xlabel('Category' if level == 'category' else 'Category / Subcategory',
+                         fontsize=9, color='#64748b')
+        axbar.grid(axis='y', color='#e2e8f0', linewidth=0.8)
+        axbar.set_axisbelow(True)
+        axbar.spines['top'].set_visible(False)
+        axbar.spines['right'].set_visible(False)
+        axbar.set_title('Issue frequency - hover over a bar for details',
+                        loc='left', fontsize=10, color='#64748b', pad=4)
+        axbar.bar_label(bars, labels=[f'{value:,}' for value in values],
+                        padding=3, fontsize=8, color='#334155')
+
+        axline.plot(x, cumulative, color='#7c3aed', linewidth=2.4,
+                    marker='o', markersize=5, markerfacecolor='white',
+                    markeredgewidth=2)
+        axline.fill_between(x, cumulative, color='#7c3aed', alpha=0.08)
+        axline.axhline(80, color='#f97316', linewidth=1.4,
+                       linestyle=(0, (5, 4)))
+        axline.set_ylim(0, 105)
+        axline.set_xlim(-0.5, max(len(labels) - 0.5, 0.5))
+        axline.set_ylabel('Cumulative %', fontsize=9, color='#334155')
+        axline.set_xticks(x)
+        axline.set_xticklabels(labels, fontsize=8, rotation=35, ha='right')
+        axline.set_xlabel('Category' if level == 'category' else 'Category / Subcategory',
+                          fontsize=9, color='#64748b')
+        axline.grid(axis='y', color='#e2e8f0', linewidth=0.8)
+        axline.spines['top'].set_visible(False)
+        axline.spines['right'].set_visible(False)
+
+        view_name = 'Category' if level == 'category' else 'Subcategory'
+        fig.suptitle('{} Pareto analysis - {}'.format(view_name, project or 'All projects'),
+                     fontsize=15, fontweight='bold', color='#0f172a')
+
+        tooltip = axbar.annotate('', xy=(0, 0), xytext=(14, 14),
+                                 textcoords='offset points', annotation_clip=False,
+                                 bbox=dict(boxstyle='round,pad=0.55', fc='#0f172a',
+                                           ec='#334155', alpha=0.96),
+                                 color='white', fontsize=9)
+        tooltip.set_visible(False)
+
+        def on_hover(event):
+            if event.inaxes is not axbar:
+                if tooltip.get_visible():
+                    tooltip.set_visible(False)
+                    canvas.draw_idle()
+                return
+
+            hovered = None
+            for index, bar in enumerate(bars):
+                contains, _ = bar.contains(event)
+                if contains:
+                    hovered = index
+                    break
+
+            if hovered is None:
+                if tooltip.get_visible():
+                    tooltip.set_visible(False)
+                    canvas.draw_idle()
+                return
+
+            share = values[hovered] / grand_total * 100
+            bar = bars[hovered]
+            tooltip.xy = (bar.get_x() + bar.get_width() / 2, bar.get_height())
+            tooltip.set_text('{}\nIssues: {:,}\nShare: {:.1f}%\nCumulative: {:.1f}%'.format(
+                labels[hovered], values[hovered], share, cumulative[hovered]))
+            tooltip.set_visible(True)
+            canvas.draw_idle()
+
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.configure(bg='white', highlightthickness=0)
+        canvas_widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._analytics_hover_cid = canvas.mpl_connect('motion_notify_event', on_hover)
         self._analytics_chart_canvas = canvas
         self._analytics_chart_figure = fig
-        
-
-        
-        # Store current chart data for export
         self.current_chart_data = {
-            'labels': labels,
-            'values': values,
-            'cumulative': cumulative,
-            'threshold_80_idx': threshold_80_idx,
-            'level': level,
-            'total': total
+            'labels': labels, 'values': values, 'cumulative': cumulative,
+            'threshold_80_idx': threshold_80_idx, 'level': level,
+            'total': grand_total, 'all_item_count': len(ranked)
         }
-
-    
 
     def exportxcl(self):
         """
@@ -2981,7 +3052,7 @@ any project showcasing problems , status data of closing etc.
 '''
 
 def main():
-    root = tk.Tk()
+    root = ctk.CTk()
     app = ManagerUI(root)
     root.mainloop()
 

@@ -1,4 +1,7 @@
 import tkinter as tk
+import ctypes
+from ctypes import wintypes
+import types
 from tkinter import messagebox, simpledialog, Menu
 from PIL import Image, ImageTk, ImageDraw, ImageFont,ImageEnhance,ImageFilter
 import fitz  
@@ -9,11 +12,14 @@ import shutil
 import tempfile
 import re
 import os
+import ntpath
 import json
 import numpy as np
 import getpass
 import sys
 import subprocess
+import time
+import uuid
 import pg_sqlite_compat as sqlite3
 import shlex
 from difflib import SequenceMatcher
@@ -29,11 +35,8 @@ from path_policy import (
 )
 from tkinter import ttk
 import pytesseract
-import os
 import cv2
 import io
-import re
-import sys
 import filedialog_compat as filedialog
 
 User = sys.argv[1] if len(sys.argv) > 1 else None
@@ -65,7 +68,52 @@ def configure_tesseract_cmd():
             return candidate
 
     return None
+def prevent_power_throttling():
+    """
+    Ask Windows not to apply power-saving CPU throttling to this process.
+    FUNCTIONAL USE: Confirmed root cause of severe touch-drawing lag: Windows'
+    battery power plan downclocks/throttles background-seeming processes, which
+    slows PDF rasterization and canvas compositing enough to cause multi-second
+    stalls. This opts this specific process out of that throttling class, similar
+    to what media/CAD apps do, so behavior stays consistent on battery.
+    """
+    if os.name != 'nt':
+        return False
 
+    try:
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        )
+
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+
+        class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
+            _fields_ = [
+                ("Version", ctypes.c_ulong),
+                ("ControlMask", ctypes.c_ulong),
+                ("StateMask", ctypes.c_ulong),
+            ]
+
+        state = PROCESS_POWER_THROTTLING_STATE()
+        state.Version = 1
+        state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        state.StateMask = 0  # disable throttling for execution speed
+
+        PROCESS_POWER_THROTTLING_STATE_INFO = 4
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ctypes.windll.kernel32.SetProcessInformation(
+            handle,
+            PROCESS_POWER_THROTTLING_STATE_INFO,
+            ctypes.byref(state),
+            ctypes.sizeof(state)
+        )
+        print("[INFO] Power throttling disabled for this process")
+        return True
+    except Exception as e:
+        print(f"[WARN] Could not disable power throttling: {e}")
+        return False
 
 TESSERACT_CMD = configure_tesseract_cmd()
 if TESSERACT_CMD:
@@ -84,7 +132,129 @@ def app_base():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
+def configure_touch_feedback(hwnd):
+    """Keep touch drawing responsive while suppressing Windows one-finger pan.
 
+    Windows may interpret a mostly vertical finger movement as a scroll/pan
+    gesture before Tk receives B1-Motion. Block only GID_PAN on the canvas,
+    keep GID_ZOOM enabled, and disable visual feedback. No Python WNDPROC or
+    raw WM_TOUCH callback is installed, so this remains safe on Python 3.14.
+    """
+    if os.name != 'nt':
+        return False
+    try:
+        user32 = ctypes.windll.user32
+
+        class GESTURECONFIG(ctypes.Structure):
+            _fields_ = [
+                ('dwID', wintypes.DWORD),
+                ('dwWant', wintypes.DWORD),
+                ('dwBlock', wintypes.DWORD),
+            ]
+
+        GID_ZOOM = 3
+        GID_PAN = 4
+        GC_ZOOM = 0x00000001
+        GC_PAN = 0x00000001
+
+        set_gesture_config = user32.SetGestureConfig
+        set_gesture_config.argtypes = [
+            wintypes.HWND, wintypes.DWORD, wintypes.UINT,
+            ctypes.POINTER(GESTURECONFIG), wintypes.UINT
+        ]
+        set_gesture_config.restype = wintypes.BOOL
+
+        # Allow two-finger zoom but block Windows from stealing a one-finger
+        # vertical or horizontal stroke as a native pan/scroll gesture.
+        configs = (GESTURECONFIG * 2)(
+            GESTURECONFIG(GID_ZOOM, GC_ZOOM, 0),
+            GESTURECONFIG(GID_PAN, 0, GC_PAN),
+        )
+        gesture_ok = bool(set_gesture_config(
+            hwnd, 0, len(configs), configs, ctypes.sizeof(GESTURECONFIG)
+        ))
+        if not gesture_ok:
+            print(f'[WARN] SetGestureConfig failed: {ctypes.get_last_error()}')
+
+        feedback_ok = False
+        try:
+            setting = user32.SetWindowFeedbackSetting
+            setting.restype = wintypes.BOOL
+            setting.argtypes = [
+                wintypes.HWND, wintypes.DWORD, wintypes.DWORD,
+                wintypes.UINT, ctypes.c_void_p
+            ]
+            feedback_off = wintypes.BOOL(False)
+            for feedback_id in (3, 5, 6, 7, 8, 9, 10):
+                if setting(hwnd, feedback_id, 0, ctypes.sizeof(feedback_off),
+                           ctypes.byref(feedback_off)):
+                    feedback_ok = True
+        except Exception as exc:
+            print(f'[WARN] Touch feedback configuration skipped: {exc}')
+
+        if gesture_ok:
+            print('[INFO] One-finger Windows pan blocked; tool strokes enabled')
+        return gesture_ok or feedback_ok
+    except Exception as exc:
+        print(f'[WARN] Touch gesture configuration skipped: {exc}')
+        return False
+
+def show_onscreen_keyboard():
+    """
+    Launch Windows on-screen keyboard (touch keyboard preferred, falls back to osk.exe).
+    FUNCTIONAL USE: Pops up a virtual keyboard whenever a text entry field gains focus.
+    Uses ShellExecuteW instead of subprocess.Popen because both TabTip.exe and osk.exe
+    are shell-integrated components that Windows expects to be launched via the shell
+    activation path — invoking them through a raw CreateProcess (which subprocess.Popen
+    does) commonly fails with WinError 740 "requires elevation" even without any actual
+    admin requirement.
+    """
+    if os.name != 'nt':
+        return
+
+    try:
+        tabtip_path = r"C:\Program Files\Common Files\Microsoft Shared\ink\TabTip.exe"
+        if os.path.exists(tabtip_path):
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, "open", tabtip_path, None, None, 1  # SW_SHOWNORMAL
+            )
+            # ShellExecuteW returns a value > 32 on success
+            if result > 32:
+                return
+            print(f"[WARN] TabTip ShellExecute returned {result}")
+    except Exception as e:
+        print(f"[WARN] TabTip launch failed: {e}")
+
+    try:
+        osk_path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "osk.exe")
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "open", osk_path, None, None, 1
+        )
+        if result > 32:
+            return
+        print(f"[WARN] osk.exe ShellExecute returned {result}")
+    except Exception as e:
+        print(f"[WARN] osk.exe launch failed: {e}")
+
+
+def hide_onscreen_keyboard():
+    """
+    Attempt to close the on-screen keyboard windows (osk.exe / TabTip).
+    FUNCTIONAL USE: Called when a text field loses focus so the keyboard
+    doesn't stay on screen unnecessarily.
+    """
+    if os.name != 'nt':
+        return
+    try:
+        subprocess.run(["taskkill", "/IM", "osk.exe", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["taskkill", "/IM", "TabTip.exe", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 def asset_path(filename):
     """Resolve asset paths for source runs and PyInstaller bundles."""
     bundle_dir = getattr(sys, "_MEIPASS", "")
@@ -376,6 +546,9 @@ class CircuitInspector:
         self.working_excel_path = None
         self.checklist_file = self.excel_file
         self.zoom_level = 1.0
+        self.ZOOM_MIN = 0.5
+        self.ZOOM_MAX = 3.0
+        self.ZOOM_STEP = 0.1
         self.current_sr_no = 1
         self.current_page_image = None
         self.tool_mode = None  # None, "pen", or "text"
@@ -429,28 +602,112 @@ class CircuitInspector:
         self.active_highlighter = None
         self.highlighter_colors = {
             'green': {'rgb': (0, 255, 0), 'rgba': (0, 255, 0, 100), 'name': ' OK'},
-            'orange': {'rgb': (255, 165, 0), 'rgba': (255, 165, 0, 120), 'name': ' Error'},
+            'pink': {'rgb': (255, 20, 147), 'rgba': (255, 20, 147, 120), 'name': ' Error'},
             'yellow': {'rgb': (255, 255, 0), 'rgba': (255, 255, 0, 80), 'name': 'Wiring '}
         }
         self.current_color_key = 'yellow'  # Default color
         self.highlight_points = []
 
+        # -------- MULTI-MARK MODE (attach several highlights to one existing punch) --------
+        # When active, every pink highlight drawn on the PDF is attached directly
+        # to `self.multimark_punch` (skipping the "already marked?" dialog and the
+        # full categorization/Excel-row-creation flow, since the punch already
+        # exists). Only the highlighter + view/navigation tools remain usable while
+        # this is on; pen/text tools are locked out until the user presses Stop.
+        self.multimark_active = False
+        self.multimark_punch = None  # dict: sr_no, ref_no, punch_text, category, row
+        self.multimark_count = 0     # highlights added so far in this session
+        self.multimark_bar = None            # toolbar frame holding the Stop button
+        self.multimark_bar_label_var = None  # tk.StringVar for the bar's status text
+
+        # TOGGLE: when True (default), pink highlights go through the full
+        # error-categorization flow and write a row into the Excel punch sheet.
+        # When False, an pink highlight is still drawn/kept as an annotation
+        # (and still saved with the session) but NO Excel row is created and
+        # NO Interphase status update happens - useful for quickly marking
+        # visual errors without touching the workbook.
+        self.mark_errors_to_excel = True
+
+        # -------- BATCHED SAVE / SYNC STATE --------
+        # Instead of writing to the database (sync_manager_stats_only) and
+        # resaving the session on every single annotation, most actions now
+        # just flag work as "dirty". A background timer flushes dirty work
+        # periodically, and onclosing() always does one final flush - so a
+        # normal exit OR an abrupt crash/kill still leaves the DB/session in
+        # a recent, consistent state without paying the I/O cost on every click.
+        self._dirty = False
+        self._autosave_interval_ms = 45000  # flush at most every 45s
+        self._autosave_after_id = None
+        self._last_flush_time = 0.0
+
         # Drawing / tool state
         self.drawing = False
         self.drawing_type = None  # 'highlight', 'pen', 'text'
         self.temp_line_ids = []  # Store temporary drawing line IDs
+        self.drawing_page = None
+        self.drawing_page_offset = (0, 0)
+        self.page_layout = []
+        self.page_images = []
+        # PDF rasterization is the dominant UI cost. Keep page renders cached and
+        # invalidate only pages whose annotations changed. The previous code
+        # rasterized every page after every pen/highlight action.
+        self._page_render_cache = {}
+        self._page_cache_zoom = None
+        self._display_after_id = None
         self.selected_annotation = None
+        # Microsoft-style text box interaction state.
+        self._text_box_start = None
+        self._text_box_preview_id = None
+        self._text_editor = None
+        self._text_editor_window_id = None
+        self._text_edit_annotation = None
+        self._text_transform_mode = None
+        self._text_transform_start = None
+        self._text_transform_original_bbox = None
+        self._text_selection_ids = []
         self.undo_stack = []  # Stack for undo operations
         self.max_undo = 50    # Maximum undo history
         self.hover_annotation = None  # For hover preview
-
+        self._touch_scroll_lock_until = 0.0
+        self._panning = False  # NEW: tracks whether a no-tool pan/scroll drag is active
+        self._native_pinch_start_distance = None
+        self._native_pinch_start_zoom = None
+        self._native_pinch_last_zoom = None
+        self._native_pinch_render_after_id = None
+        self._native_pinch_preview_after_id = None
+        self._native_pinch_preview_pending = False
+        self._native_pinch_preview_interval_ms = 16
+        self._native_pinch_finish_delay_ms = 180
+        self._safe_pinch_last_raw = None
+        self._safe_pinch_last_time = 0.0
+        self._safe_pinch_accumulator = 1.0
+        self._safe_pinch_active = False
+        self._safe_pinch_release_funcid = None
+        self._safe_pinch_watchdog_ms = 1200
+        # Cached source pixmap for the page being pinch-zoomed, captured once
+        # at gesture start. Live pinch frames resize this in-memory PIL image
+        # instead of re-rasterizing the PDF on every touch event, which is
+        # what made pinch feel laggy - PyMuPDF get_pixmap() is comparatively
+        # expensive and the digitizer can fire far faster than it can keep up.
+        self._pinch_base_image = None
+        self._pinch_base_scale = None
+        self._pinch_base_page = None
+        self._pinch_frame_pending = False
+        self._pinch_frame_min_interval = 1.0 / 60.0  # cap live redraws to ~60fps
+        self._pinch_last_frame_time = 0.0
+        self._busy_overlay = None  # modal loading overlay, see busy()/unbusy()
+        self._zoom_render_after_id = None
+        self._zoom_dropdown_updating = False
+        self._page_entry_updating = False
         self.uisetup()
+        self.bind_global_keyboard_popup()   # <-- ADD THIS LINE
         self.current_sr_no = self.getnextsr()
         
         self.db = DatabaseManager("inspection_tool")
         self.manager_db = ManagerDB("manager")
         self.handover_db = HandoverDB("handover_db")
         self.loadrecprojui()
+        self.startautosaveloop()
 
 
     # ================================================================
@@ -523,6 +780,34 @@ class CircuitInspector:
         x1, y1, x2, y2 = bbox_display
         return (x1 / scale, y1 / scale, x2 / scale, y2 / scale)
 
+    def _page_at_point(self, x, y):
+        """Return the stacked page layout item that contains a canvas point."""
+        for layout in self.page_layout:
+            left = layout['x']
+            top = layout['y']
+            right = left + layout['width']
+            bottom = top + layout['height']
+            if left <= x <= right and top <= y <= bottom:
+                return layout
+
+        if self.page_layout:
+            return min(
+                self.page_layout,
+                key=lambda layout: abs((layout['y'] + (layout['height'] / 2)) - y)
+            )
+
+        return None
+
+    def _point_to_page_coords(self, x, y):
+        """Map a canvas point into page-local coordinates in the stacked layout."""
+        layout = self._page_at_point(x, y)
+        if not layout:
+            return None, None, None, None
+
+        local_x = x - layout['x']
+        local_y = y - layout['y']
+        return layout['page_index'], local_x, local_y, layout
+
     # ================================================================
     # HIGHLIGHTER HELPER - AUTO-STRAIGHTEN
     # ================================================================
@@ -549,87 +834,236 @@ class CircuitInspector:
         Handle mouse down event for highlighter/pen/text drawing and annotation interactions.
         FUNCTIONAL USE: Initiates highlighter/pen stroke, text entry, or annotation selection.
         Routes to appropriate handler based on active tool mode (highlight, pen, text).
+        When NO tool is active, starts a canvas pan (scan) instead, so touch drag
+        behaves like normal scrolling.
         Args: event - Tkinter mouse event with x, y coordinates
         """
+        # Canvas widget bindings return 'break', which prevents bind_all from
+        # seeing this press. Apply a pending page value before canvas handling.
+        if getattr(self, '_page_edit_active', False):
+            typed_page = self.page_var.get().strip()
+            self._page_edit_active = False
+            self._apply_captured_page_value(typed_page)
+            return "break"
+
         if not self.pdf_document:
             messagebox.showwarning("Warning", "Please load a PDF first")
-            return
+            return "break"
+
+        # Canvas events only occur outside the embedded Tk Text editor.
+        # Save and close the editor immediately, then process this click.
+        if self._text_editor is not None:
+            self._commit_text_editor()
 
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
+
+        # Existing text boxes remain movable/resizable after placement.
+        # A drag beginning on a text box transforms that box; a drag beginning
+        # anywhere else with no active tool continues to pan the document.
+        if not self.active_highlighter and self.tool_mode != "pen":
+            hit, hit_mode = self._hit_test_text_box(x, y)
+            if hit is not None:
+                self._commit_text_editor()
+                self.selected_annotation = hit
+                self._text_transform_mode = hit_mode
+                self._text_transform_start = (x, y)
+                self._text_transform_original_bbox = tuple(
+                    hit.get('bbox_page', (0, 0, 0, 0))
+                )
+                self.drawing = True
+                self.drawing_type = "text_transform"
+                try:
+                    self.canvas.grab_set()
+                except tk.TclError:
+                    pass
+                self._draw_text_selection(hit)
+                return "break"
+            if self.tool_mode is None:
+                self._clear_text_selection()
 
         # -------- HIGHLIGHTER MODE --------
         if self.active_highlighter:
+            page_index, local_x, local_y, layout = self._point_to_page_coords(x, y)
+            if page_index is None:
+                return "break"
+            self.current_page = page_index
             self.drawing = True
             self.drawing_type = "highlight"
-            self.highlight_points = [(x, y)]
+            self.drawing_page = page_index
+            self.drawing_page_offset = (layout['x'], layout['y'])
+            self.highlight_points = [(local_x, local_y)]
             self.cleartemp()
-            return
+            try:
+                self.canvas.grab_set()
+            except tk.TclError:
+                pass
+            self._touch_scroll_lock_until = time.monotonic() + 5.0  # NEW
+            return "break"
 
         # -------- PEN TOOL --------
         if self.tool_mode == "pen":
+            page_index, local_x, local_y, layout = self._point_to_page_coords(x, y)
+            if page_index is None:
+                return "break"
+            self.current_page = page_index
             self.drawing = True
             self.drawing_type = "pen"
-            self.pen_points = [(x, y)]
+            self.drawing_page = page_index
+            self.drawing_page_offset = (layout['x'], layout['y'])
+            self.pen_points = [(local_x, local_y)]
             self.cleartemp()
-            return
+            try:
+                self.canvas.grab_set()
+            except tk.TclError:
+                pass
+            self._touch_scroll_lock_until = time.monotonic() + 5.0  # NEW
 
-        # -------- TEXT TOOL --------
+            return "break"
+
+        # -------- TEXT TOOL: drag to size, or drag an existing box --------
         if self.tool_mode == "text":
+            self._commit_text_editor()
+            page_index, local_x, local_y, layout = self._point_to_page_coords(x, y)
+            if page_index is None:
+                return "break"
+            self.current_page = page_index
             self.drawing = True
-            self.drawing_type = "text"
-            self.text_pos_x = x
-            self.text_pos_y = y
-            return
+            self.drawing_type = "text_box"
+            self.drawing_page = page_index
+            self.drawing_page_offset = (layout['x'], layout['y'])
+            self._text_box_start = (local_x, local_y)
+            self.cleartemp()
+            self._touch_scroll_lock_until = time.monotonic() + 5.0
+            return "break"
+
+        # -------- NO TOOL ACTIVE: start a normal pan/scroll drag --------
+        self.drawing = False
+        self.drawing_type = None
+        self.canvas.scan_mark(event.x, event.y)
+        self._panning = True
+        return "break"
 
     def leftdrag(self, event):
         """
-        Handle mouse movement during button press for continuous drawing.
-        FUNCTIONAL USE: Extends pen/highlighter stroke with new points, updates temporary preview on canvas.
-        Called repeatedly during drag motion to render real-time feedback.
-        Args: event - Tkinter mouse event with x, y coordinates
-        
+        Record the latest pointer position during a drag. The actual drawing
+        work is throttled to a fixed interval by _process_drag_frame instead
+        of running on every raw touch/mouse motion event, since touch digitizers
+        can report motion far faster than a canvas redraw needs to happen.
+        When no tool is active, this instead pans the canvas (normal scroll
+        behavior) using Tk's scan_dragto.
         """
+        if self._panning and not self.drawing:
+            # Normal touch/mouse drag-to-scroll when no tool is selected.
+            self.canvas.scan_dragto(event.x, event.y, gain=1)
+            self._update_current_page_from_scroll()
+            return "break"
+
         if not self.drawing:
+            return "break"
+
+        self._pending_drag_event = event
+
+        if not getattr(self, '_drag_frame_scheduled', False):
+            self._drag_frame_scheduled = True
+            self.root.after(16, self._process_drag_frame)  # ~60fps cap
+
+        return "break"
+
+    def _process_drag_frame(self):
+        """
+        Consume the most recent pending drag position and perform the actual
+        canvas update. Runs at a fixed ~60fps cadence regardless of how many
+        raw motion events fired since the last frame, which is what keeps
+        touch drawing responsive instead of being overwhelmed by event volume.
+        """
+        self._drag_frame_scheduled = False
+
+        event = getattr(self, '_pending_drag_event', None)
+        self._pending_drag_event = None
+
+        if event is None or not self.drawing:
             return
 
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
+        offset_x, offset_y = self.drawing_page_offset
+        local_x = x - offset_x
+        local_y = y - offset_y
 
-        # -------- HIGHLIGHTER DRAWING --------
-        if self.drawing_type == "highlight":
-            if len(self.highlight_points) > 0:
-                last_x, last_y = self.highlight_points[-1]
-                
-                # Get highlighter color
-                rgba = self.highlighter_colors[self.active_highlighter]['rgba']
-                rgb = self.highlighter_colors[self.active_highlighter]['rgb']
-                hex_color = f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
-                
-                # Draw thick line segment
-                line_id = self.canvas.create_line(
-                    last_x, last_y, x, y,
-                    fill=hex_color,
-                    width=max(15, int(15 * self.zoom_level)),
-                    capstyle=tk.ROUND,
-                    smooth=True
-                )
-                self.temp_line_ids.append(line_id)
-            
-            self.highlight_points.append((x, y))
+        MIN_POINT_DIST = 6
+
+        if self.drawing_type == "text_box":
+            sx, sy = self._text_box_start
+            x1, y1, x2, y2 = sx + offset_x, sy + offset_y, local_x + offset_x, local_y + offset_y
+            if self._text_box_preview_id is None:
+                self._text_box_preview_id = self.canvas.create_rectangle(
+                    x1, y1, x2, y2, outline='#2563eb', width=2, dash=(5, 3), tags=('text_ui',))
+            else:
+                self.canvas.coords(self._text_box_preview_id, x1, y1, x2, y2)
             return
 
-        # -------- PEN TOOL DRAWING --------
+        if self.drawing_type == "text_transform":
+            self._update_text_transform(x, y)
+            return
+
+        if self.drawing_type == "highlight":
+            if self.highlight_points:
+                last_x, last_y = self.highlight_points[-1]
+                if (local_x - last_x) ** 2 + (local_y - last_y) ** 2 < MIN_POINT_DIST ** 2:
+                    return
+
+            self.highlight_points.append((local_x, local_y))
+
+            rgb = self.highlighter_colors[self.active_highlighter]['rgb']
+            hex_color = f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
+
+            if self.temp_line_ids:
+                line_id = self.temp_line_ids[0]
+                self.canvas.coords(line_id, *[
+                    coord for px, py in self.highlight_points
+                    for coord in (px + offset_x, py + offset_y)
+                ])
+            else:
+                if len(self.highlight_points) >= 2:
+                    flat_pts = []
+                    for px, py in self.highlight_points:
+                        flat_pts.extend([px + offset_x, py + offset_y])
+                    line_id = self.canvas.create_line(
+                        *flat_pts,
+                        fill=hex_color,
+                        width=max(15, int(15 * self.zoom_level)),
+                        capstyle=tk.ROUND,
+                        joinstyle=tk.ROUND,
+                        smooth=True
+                    )
+                    self.temp_line_ids.append(line_id)
+            return
+
         if self.drawing_type == "pen":
-            if len(self.pen_points) > 0:
+            if self.pen_points:
                 last_x, last_y = self.pen_points[-1]
-                line_id = self.canvas.create_line(
-                    last_x, last_y, x, y,
-                    fill="red", width=3,
-                    capstyle=tk.ROUND, smooth=True
-                )
-                self.temp_line_ids.append(line_id)
-            self.pen_points.append((x, y))
+                if (local_x - last_x) ** 2 + (local_y - last_y) ** 2 < MIN_POINT_DIST ** 2:
+                    return
+
+            self.pen_points.append((local_x, local_y))
+
+            if self.temp_line_ids:
+                line_id = self.temp_line_ids[0]
+                self.canvas.coords(line_id, *[
+                    coord for px, py in self.pen_points
+                    for coord in (px + offset_x, py + offset_y)
+                ])
+            else:
+                if len(self.pen_points) >= 2:
+                    flat_pts = []
+                    for px, py in self.pen_points:
+                        flat_pts.extend([px + offset_x, py + offset_y])
+                    line_id = self.canvas.create_line(
+                        *flat_pts, fill="red", width=3,
+                        capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True
+                    )
+                    self.temp_line_ids.append(line_id)
             return
 
     def leftrel(self, event):
@@ -639,8 +1073,20 @@ class CircuitInspector:
         saves annotation with extracted text to session, triggers error categorization dialog.
         Args: event - Tkinter mouse event with x, y coordinates
         """
+        try:
+            if self.canvas.grab_current() == self.canvas:
+                self.canvas.grab_release()
+        except tk.TclError:
+            pass
+
+        # NEW: end a pan drag cleanly if that's what was happening
+        if getattr(self, '_panning', False):
+            self._panning = False
+            if not self.drawing:
+                return "break"
+
         if not self.pdf_document or not self.drawing:
-            return
+            return "break"
 
         # -------- HIGHLIGHTER FINISH WITH OCR --------
         if self.drawing_type == "highlight":
@@ -660,14 +1106,14 @@ class CircuitInspector:
                 annotation = {
                     'type': 'highlight',
                     'color': self.active_highlighter,
-                    'page': self.current_page,
+                    'page': self.drawing_page if self.drawing_page is not None else self.current_page,
                     'bbox_page': bbox_page,
                     'points_page': points_page,
                     'timestamp': datetime.now().isoformat()
                 }
                 
-                # NEW: Extract text from highlighted area if orange highlighter
-                if self.active_highlighter == 'orange':
+                # NEW: Extract text from highlighted area if pink highlighter
+                if self.active_highlighter == 'pink':
                     extracted_text = self.exctracttxt(annotation)
                     
                     if extracted_text:
@@ -675,10 +1121,17 @@ class CircuitInspector:
 
                     else:
                         annotation['extracted_text'] = None
-                        
-                    
-                    # Show action menu with extracted text
-                    self.errorhighlight(annotation)
+
+                    # -------- MULTI-MARK MODE --------
+                    # If we're currently attaching extra highlights to one
+                    # already-existing punch, skip the "already marked?" dialog
+                    # and the whole categorization/Excel flow entirely - just
+                    # tag this highlight with that punch's identity and add it.
+                    if self.multimark_active and self.multimark_punch:
+                        self.attachmultimark(annotation)
+                    else:
+                        # Show action menu with extracted text
+                        self.errorhighlight(annotation)
                 else:
                     # Green/Yellow highlighters - no OCR, just add annotation
                     self.annotations.append(annotation)
@@ -689,8 +1142,9 @@ class CircuitInspector:
             self.cleartemp()
             self.drawing = False
             self.drawing_type = None
+            self._touch_scroll_lock_until = time.monotonic() + 0.35
             self.updtoolpane()
-            return
+            return "break"
 
         # -------- PEN TOOL FINISH - NO CHANGES --------
         if self.drawing_type == "pen":
@@ -698,7 +1152,7 @@ class CircuitInspector:
                 points_page = self.display_to_page_coords(self.pen_points)
                 annotation = {
                     'type': 'pen',
-                    'page': self.current_page,
+                    'page': self.drawing_page if self.drawing_page is not None else self.current_page,
                     'points': points_page,
                     'timestamp': datetime.now().isoformat()
                 }
@@ -709,48 +1163,48 @@ class CircuitInspector:
             self.drawing = False
             self.drawing_type = None
             self.display()
+            self._touch_scroll_lock_until = time.monotonic() + 0.35
             self.updtoolpane()
-            return
-
-        # -------- TEXT TOOL FINISH - NO CHANGES --------
-        if self.drawing_type == "text":
-            txt = simpledialog.askstring("Text", "Enter text:", parent=self.root)
-            if txt and txt.strip():
-                pos_page = self.display_to_page_coords((self.text_pos_x, self.text_pos_y))
-                annotation = {
-                    'type': 'text',
-                    'page': self.current_page,
-                    'pos_page': pos_page,
-                    'text': txt.strip(),
-                    'timestamp': datetime.now().isoformat()
-                }
-                self.annotations.append(annotation)
-                self.addtostack('add_annotation', annotation)
-                self.display()
-            self.drawing = False
-            self.drawing_type = None
-            self.updtoolpane()
-            return
-
-    def doubleclick(self, event):
-        """Zoom in when double left-clicking on the display canvas."""
-        if not self.pdf_document:
             return "break"
 
-        self.drawing = False
-        self.cleartemp()
-        self.zoomin()
-        return "break"
-
-    def doubleright(self, event):
-        """Zoom out when double right-clicking on the display canvas."""
-        if not self.pdf_document:
+        # -------- TEXT BOX FINISH --------
+        if self.drawing_type == "text_box":
+            x = self.canvas.canvasx(event.x)
+            y = self.canvas.canvasy(event.y)
+            ox, oy = self.drawing_page_offset
+            ex, ey = x - ox, y - oy
+            sx, sy = self._text_box_start
+            x1, x2 = sorted((sx, ex)); y1, y2 = sorted((sy, ey))
+            if self._text_box_preview_id is not None:
+                self.canvas.delete(self._text_box_preview_id)
+                self._text_box_preview_id = None
+            # A small drag still creates a practical default box.
+            if x2 - x1 < 80: x2 = x1 + 220
+            if y2 - y1 < 35: y2 = y1 + 90
+            annotation = {
+                'type': 'text', 'page': self.drawing_page,
+                'bbox_page': self.bbox_display_to_page((x1, y1, x2, y2)),
+                'pos_page': self.display_to_page_coords((x1, y1)),
+                'text': '', 'font_size': 12,
+                'timestamp': datetime.now().isoformat()
+            }
+            self.annotations.append(annotation)
+            self.addtostack('add_annotation', annotation)
+            self.drawing = False; self.drawing_type = None
+            self._open_text_editor(annotation, select_all=False)
             return "break"
 
-        self.drawing = False
-        self.cleartemp()
-        self.zoomout()
+        if self.drawing_type == "text_transform":
+            self.drawing = False; self.drawing_type = None
+            self._text_transform_mode = None
+            self.mark_dirty()
+            self.display()
+            self._draw_text_selection(self.selected_annotation)
+            return "break"
+
         return "break"
+
+    
 
 
     """
@@ -768,10 +1222,22 @@ class CircuitInspector:
         Args: annotation - Dictionary with highlight bbox and page info
         Returns: Extracted and cleaned text string or None if OCR fails
         """
-        if self.current_page_image is None:
+        if not self.pdf_document:
             return None
-        
+
         try:
+            # OCR the actual annotation page. This avoids keeping a second
+            # full-size NumPy copy of every cached PDF page in memory.
+            page_index = int(annotation.get('page', self.current_page))
+            if page_index < 0 or page_index >= len(self.pdf_document):
+                return None
+            pix = self.pdf_document[page_index].get_pixmap(
+                matrix=fitz.Matrix(self.page_to_display_scale(), self.page_to_display_scale()),
+                alpha=False
+            )
+            ocr_page_image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )[:, :, :3]
             bbox_page = annotation.get('bbox_page')
             if not bbox_page:
                 return None
@@ -783,7 +1249,7 @@ class CircuitInspector:
             PADDING_X = 10  # Horizontal padding
             PADDING_Y = 20  # Vertical padding (more because text height matters)
             
-            height, width = self.current_page_image.shape[:2]
+            height, width = ocr_page_image.shape[:2]
             
             x1 = max(0, int(x1) - PADDING_X)
             y1 = max(0, int(y1) - PADDING_Y)
@@ -797,7 +1263,7 @@ class CircuitInspector:
                 print(" WARNING: Highlighted area too small")
                 return None
             
-            cropped = self.current_page_image[y1:y2, x1:x2]
+            cropped = ocr_page_image[y1:y2, x1:x2]
             
             if cropped.size == 0:
                 return None
@@ -1085,10 +1551,199 @@ class CircuitInspector:
         # Convert back to PIL
         return Image.fromarray(denoised)
 
+    # ================================================================
+    # MULTI-MARK MODE: attach several highlights to one existing punch
+    # ================================================================
+
+    def startmultimark(self, punch):
+        """
+        Enter multi-mark mode for an already-existing punch.
+        FUNCTIONAL USE: Called from the "Edit Existing Punch" dialog. From this
+        point on, every pink highlight drawn on the PDF is attached directly to
+        this punch (same sr_no/ref_no/category/description) instead of going
+        through the "already marked?" dialog or the categorization menu. A Stop
+        button appears on the toolbar; pen/text tools are locked until Stop is
+        pressed. Highlighter, zoom, pan, and page navigation keep working normally.
+        Args: punch - dict from allexistingpunches()/openpuches() with at least
+              sr_no, ref_no, punch_text, category, row.
+        """
+        if not punch:
+            return
+        self.deactivate()  # clear any active tool/highlighter cleanly first
+
+        self.multimark_active = True
+        self.multimark_punch = dict(punch)
+        # Seed the counter with highlights that already exist for this punch
+        # (from earlier sessions, or a previous multi-mark round), so the
+        # bar doesn't reset to 0 and mislead the user into thinking nothing
+        # was marked before.
+        self.multimark_count = self._count_existing_highlights(punch)
+
+        # Force the pink (error) highlighter on so the user can start marking
+        # immediately without an extra click.
+        self.current_color_key = 'pink'
+        self.active_highlighter = 'pink'
+        self.root.config(cursor="pencil")
+        self.colorbutton()
+
+        self._show_multimark_bar()
+        self.flashstat(
+            f" Multi-mark mode: SR {punch.get('sr_no')} - highlight the PDF, press Stop when done",
+            bg='#ec4899'
+        )
+
+    def _count_existing_highlights(self, punch):
+        """
+        Count highlight annotations already attached to this punch (pink,
+        still-open ones, plus any already verified/green ones), so re-entering
+        multi-mark mode for a punch that was marked before shows the true
+        running total instead of resetting to 0.
+        Uses the same sr_no/excel_row matching as the verification dialog's
+        find_all_anns, so counts always agree with what "Verify" will act on.
+        """
+        sr_key = str(punch.get('sr_no', '')).strip()
+        row_key = str(punch.get('row', '')).strip()
+        count = 0
+        for a in self.annotations:
+            matches_id = ((str(a.get('sr_no', '')).strip() == sr_key and sr_key) or
+                          (str(a.get('excel_row', '')).strip() == row_key and row_key))
+            if matches_id and a.get('type') == 'highlight' and a.get('color') in ('pink', 'green'):
+                count += 1
+        return count
+
+    def attachmultimark(self, annotation):
+        """
+        Attach one newly-drawn pink highlight to the punch selected for
+        multi-mark mode, without touching Excel (the punch row already exists)
+        and without opening the categorization menu.
+        """
+        punch = self.multimark_punch
+        if not punch:
+            # Safety net - mode flag got out of sync somehow; fall back to the
+            # normal categorization flow instead of silently dropping the mark.
+            self.errorhighlight(annotation)
+            return
+
+        annotation['component'] = punch.get('category')
+        annotation['subcategory'] = None
+        annotation['punch_text'] = punch.get('punch_text')
+        annotation['ref_no'] = punch.get('ref_no')
+        annotation['excel_row'] = punch.get('row')
+        annotation['sr_no'] = punch.get('sr_no')
+        annotation['category'] = punch.get('category')
+        annotation['already_marked'] = True
+        annotation['excel_marking_skipped'] = True
+        annotation['multimark'] = True
+
+        self.annotations.append(annotation)
+        self.addtostack('add_annotation', annotation)
+        self.multimark_count += 1
+        self.mark_dirty()
+        self.display()
+        self.flashstat(
+            f" Highlight #{self.multimark_count} added for SR {punch.get('sr_no')}",
+            bg='#ec4899'
+        )
+        self._update_multimark_bar_count()
+
+    def stopmultimark(self):
+        """
+        Exit multi-mark mode: restore normal toolbar/tool behaviour and
+        remove the Stop button.
+        """
+        if not self.multimark_active:
+            return
+        count = self.multimark_count
+        punch = self.multimark_punch
+        self.multimark_active = False
+        self.multimark_punch = None
+        self.multimark_count = 0
+
+        self._hide_multimark_bar()
+        self.deactivate()  # turns the highlighter off and returns to normal mode
+
+        if punch is not None:
+            self.flashstat(
+                f" Stopped - added {count} highlight(s) for SR {punch.get('sr_no')}",
+                bg='#10b981'
+            )
+
+    def _show_multimark_bar(self):
+        """Create (or refresh) the Stop button/bar shown in multi-mark mode.
+
+        NOTE: every other toolbar section is already packed with side=LEFT/
+        side=RIGHT at UI-build time, so appending a new pack()'d frame here
+        at runtime lands past all of them and can end up squeezed off the
+        visible toolbar (unclickable) depending on window width. Using
+        place() with a fixed anchor keeps it reliably on top and clickable
+        regardless of how much space the rest of the toolbar has claimed.
+        """
+        if getattr(self, 'multimark_bar', None) is not None:
+            self._update_multimark_bar_count()
+            return
+
+        bar = tk.Frame(self.toolbar, bg='#be185d', highlightthickness=2,
+                        highlightbackground='#ffffff')
+        self.multimark_bar = bar
+
+        self.multimark_bar_label_var = tk.StringVar()
+        self._update_multimark_bar_count()
+
+        tk.Label(
+            bar, textvariable=self.multimark_bar_label_var, bg='#be185d', fg='white',
+            font=('Segoe UI', 9, 'bold')
+        ).pack(side=tk.LEFT, padx=(14, 10), pady=6)
+
+        stop_btn = tk.Button(
+            bar, text=" Stop ", command=self.stopmultimark,
+            bg='#ffffff', fg='#be185d', activebackground='#f1f5f9',
+            font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, borderwidth=0,
+            padx=20, pady=8, cursor='hand2'
+        )
+        stop_btn.pack(side=tk.LEFT, padx=(0, 14), pady=6)
+
+        # Float centered along the top of the toolbar, above every other
+        # control, so it's always visible and always on top of the click
+        # stack regardless of toolbar width or how the rest is packed.
+        bar.place(in_=self.toolbar, relx=0.5, rely=0.5, anchor='center')
+        bar.lift()
+
+        # Lock out pen/text tools while multi-mark mode is active.
+        self._set_locked_tools(True)
+
+    def _update_multimark_bar_count(self):
+        if getattr(self, 'multimark_bar_label_var', None) is None:
+            return
+        punch = self.multimark_punch or {}
+        self.multimark_bar_label_var.set(
+            f"Marking SR {punch.get('sr_no')}  •  {self.multimark_count} added"
+        )
+
+    def _hide_multimark_bar(self):
+        bar = getattr(self, 'multimark_bar', None)
+        if bar is not None:
+            bar.destroy()
+            self.multimark_bar = None
+            self.multimark_bar_label_var = None
+        self._set_locked_tools(False)
+
+    def _set_locked_tools(self, locked):
+        """Enable/disable the pen and text tool buttons so only the
+        highlighter (plus zoom/pan/navigation) can be used during
+        multi-mark mode."""
+        state = tk.DISABLED if locked else tk.NORMAL
+        for attr in ('pen_btn', 'text_btn'):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                try:
+                    btn.config(state=state)
+                except tk.TclError:
+                    pass
+
     def errorhighlight(self, annotation):
         """
-        Display categorization menu for orange (error) highlights with OCR-extracted text.
-        FUNCTIONAL USE: Routes orange highlights through error classification workflow.
+        Display categorization menu for pink (error) highlights with OCR-extracted text.
+        FUNCTIONAL USE: Routes pink highlights through error classification workflow.
         Shows category menu with extracted text pre-filled for punch creation.
         Args: annotation - Dictionary with highlight data and extracted_text field
         """
@@ -1297,6 +1952,27 @@ class CircuitInspector:
         ref_no = str(ref_number).strip()
         self.session_refs.add(ref_no)
 
+        # -------- TOGGLE OFF: keep the annotation locally, skip Excel entirely --------
+        if not self.mark_errors_to_excel:
+            annotation['component'] = component_type
+            annotation['subcategory'] = error_name
+            annotation['punch_text'] = punch_text
+            annotation['ref_no'] = ref_no
+            annotation['excel_row'] = None
+            annotation['sr_no'] = None
+            annotation['implemented'] = False
+            annotation['implemented_name'] = None
+            annotation['implemented_date'] = None
+            annotation['implementation_remark'] = None
+            annotation['excel_marking_skipped'] = True
+
+            self.annotations.append(annotation)
+            self.display()
+
+            self.flashstat(f" Marked locally (Excel skipped) - Ref {ref_no}", bg='#f59e0b')
+            self.mark_dirty()
+            return
+
         try:
             wb = load_workbook(self.excel_file)
             ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
@@ -1350,9 +2026,10 @@ class CircuitInspector:
 
             # Add to annotations list
             self.annotations.append(annotation)
+            self.addtostack('add_annotation', annotation)
             self.current_sr_no = self.getnextsr()
             
-            # Redraw to show the color change from orange to red
+            # Redraw to show the color change from pink to red
             self.display()
 
             print(f" Logged: Ref {ref_no}, SR {sr_no_assigned}")
@@ -1365,7 +2042,7 @@ class CircuitInspector:
                     component_type,
                     error_name
                 )
-                self.sync_manager_stats_only()
+                self.mark_dirty()
             except Exception as e:
                 print(f"Manager category logging failed: {e}")
 
@@ -1397,6 +2074,27 @@ class CircuitInspector:
 
         ref_no = str(ref_no).strip()
         self.session_refs.add(ref_no)
+
+        # -------- TOGGLE OFF: keep the annotation locally, skip Excel entirely --------
+        if not self.mark_errors_to_excel:
+            annotation['component'] = component_type
+            annotation['subcategory'] = error_name
+            annotation['punch_text'] = punch_text
+            annotation['ref_no'] = ref_no
+            annotation['excel_row'] = None
+            annotation['sr_no'] = None
+            annotation['implemented'] = False
+            annotation['implemented_name'] = None
+            annotation['implemented_date'] = None
+            annotation['implementation_remark'] = None
+            annotation['excel_marking_skipped'] = True
+
+            self.annotations.append(annotation)
+            self.display()
+
+            self.flashstat(f" Marked locally (Excel skipped) - Ref {ref_no}", bg='#f59e0b')
+            self.mark_dirty()
+            return
 
         try:
             wb = load_workbook(self.excel_file)
@@ -1449,6 +2147,7 @@ class CircuitInspector:
             annotation['implementation_remark'] = None
 
             self.annotations.append(annotation)
+            self.addtostack('add_annotation', annotation)
             self.current_sr_no = self.getnextsr()
             self.display()
 
@@ -1462,7 +2161,7 @@ class CircuitInspector:
                     component_type,
                     error_name
                 )
-                self.sync_manager_stats_only()
+                self.mark_dirty()
             except Exception as e:
                 print(f"Manager category logging failed: {e}")
 
@@ -1509,6 +2208,25 @@ class CircuitInspector:
             ref_no = str(ref_no).strip()
             self.session_refs.add(ref_no)
 
+            # -------- TOGGLE OFF: keep the annotation locally, skip Excel entirely --------
+            if not self.mark_errors_to_excel:
+                annotation['component'] = custom_category
+                annotation['error'] = 'Custom'
+                annotation['punch_text'] = custom_action
+                annotation['ref_no'] = ref_no
+                annotation['excel_row'] = None
+                annotation['sr_no'] = None
+                annotation['timestamp'] = datetime.now().isoformat()
+                annotation['excel_marking_skipped'] = True
+
+                self.annotations.append(annotation)
+                self.display()
+
+                print(f"Logged custom locally (Excel skipped): Ref {ref_no}")
+                self.flashstat(f" Marked locally (Excel skipped) - Ref {ref_no}", bg='#f59e0b')
+                self.mark_dirty()
+                return
+
             wb = load_workbook(self.excel_file)
             ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
 
@@ -1552,6 +2270,7 @@ class CircuitInspector:
             annotation['timestamp'] = datetime.now().isoformat()
 
             self.annotations.append(annotation)
+            self.addtostack('add_annotation', annotation)
             self.current_sr_no = self.getnextsr()
             self.display()
 
@@ -1565,7 +2284,7 @@ class CircuitInspector:
                     custom_category,
                     None
                 )
-                self.sync_manager_stats_only()
+                self.mark_dirty()
             except Exception as e:
                 print(f"Manager category logging failed: {e}")
 
@@ -1630,130 +2349,413 @@ class CircuitInspector:
         self.temp_line_ids.clear()
 
     # ================================================================
+    # MICROSOFT-STYLE TEXT BOXES
+    # ================================================================
+    def _text_bbox_display(self, ann):
+        bbox = ann.get('bbox_page')
+        if not bbox:
+            x, y = ann.get('pos_page', (0, 0))
+            bbox = (x, y, x + 140, y + 55)
+            ann['bbox_page'] = bbox
+        x1, y1, x2, y2 = self.bbox_page_to_display(bbox)
+        layout = next((v for v in self.page_layout if v['page_index'] == ann.get('page')), None)
+        if not layout:
+            return None
+        return (x1 + layout['x'], y1 + layout['y'], x2 + layout['x'], y2 + layout['y'])
+
+    def _hit_test_text_box(self, x, y):
+        """Return a text annotation and move/resize mode at a canvas point."""
+        radius = 12
+        for ann in reversed(self.annotations):
+            if ann.get('type') != 'text':
+                continue
+            box = self._text_bbox_display(ann)
+            if not box:
+                continue
+            x1, y1, x2, y2 = box
+            handles = {
+                'resize_nw': (x1, y1), 'resize_n': ((x1+x2)/2, y1),
+                'resize_ne': (x2, y1), 'resize_e': (x2, (y1+y2)/2),
+                'resize_se': (x2, y2), 'resize_s': ((x1+x2)/2, y2),
+                'resize_sw': (x1, y2), 'resize_w': (x1, (y1+y2)/2),
+            }
+            for mode, (hx, hy) in handles.items():
+                if abs(x-hx) <= radius and abs(y-hy) <= radius:
+                    return ann, mode
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return ann, 'move'
+        return None, None
+
+    def _clear_text_selection(self):
+        for item in self._text_selection_ids:
+            try:
+                self.canvas.delete(item)
+            except Exception:
+                pass
+        self._text_selection_ids = []
+        self.selected_annotation = None
+
+    def _draw_text_selection(self, ann):
+        self._clear_text_selection()
+        if not ann:
+            return
+        self.selected_annotation = ann
+        box = self._text_bbox_display(ann)
+        if not box:
+            return
+        x1, y1, x2, y2 = box
+        ids = [self.canvas.create_rectangle(
+            x1, y1, x2, y2, outline='#2563eb', width=2, dash=(5, 3),
+            tags=('text_ui',))]
+        points = [
+            (x1,y1), ((x1+x2)/2,y1), (x2,y1), (x2,(y1+y2)/2),
+            (x2,y2), ((x1+x2)/2,y2), (x1,y2), (x1,(y1+y2)/2)
+        ]
+        h = 5
+        for hx, hy in points:
+            ids.append(self.canvas.create_rectangle(
+                hx-h, hy-h, hx+h, hy+h, fill='white', outline='#2563eb',
+                width=2, tags=('text_ui',)))
+        self._text_selection_ids = ids
+
+    def _update_text_transform(self, canvas_x, canvas_y):
+        ann = self.selected_annotation
+        if not ann or not self._text_transform_original_bbox:
+            return
+        sx, sy = self._text_transform_start
+        dx = (canvas_x - sx) / self.page_to_display_scale()
+        dy = (canvas_y - sy) / self.page_to_display_scale()
+        x1, y1, x2, y2 = self._text_transform_original_bbox
+        mode = self._text_transform_mode
+        if mode == 'move':
+            x1, y1, x2, y2 = x1+dx, y1+dy, x2+dx, y2+dy
+        else:
+            if mode in ('resize_nw', 'resize_w', 'resize_sw'):
+                x1 += dx
+            if mode in ('resize_ne', 'resize_e', 'resize_se'):
+                x2 += dx
+            if mode in ('resize_nw', 'resize_n', 'resize_ne'):
+                y1 += dy
+            if mode in ('resize_sw', 'resize_s', 'resize_se'):
+                y2 += dy
+            # Enforce a usable minimum size without flipping the object.
+            if x2 - x1 < 30:
+                if mode in ('resize_nw', 'resize_w', 'resize_sw'): x1 = x2 - 30
+                else: x2 = x1 + 30
+            if y2 - y1 < 18:
+                if mode in ('resize_nw', 'resize_n', 'resize_ne'): y1 = y2 - 18
+                else: y2 = y1 + 18
+        ann['bbox_page'] = (x1, y1, x2, y2)
+        ann['pos_page'] = (x1, y1)
+        self._draw_text_selection(ann)
+
+    def _delete_selected_text_box(self, event=None):
+        ann = self.selected_annotation
+        if self._text_editor is not None or not ann or ann.get('type') != 'text':
+            return
+        if ann in self.annotations:
+            self.annotations.remove(ann)
+            self._clear_text_selection()
+            self.mark_dirty()
+            self.display()
+        return "break"
+
+    def _open_text_editor(self, ann, select_all=True):
+        self._commit_text_editor()
+        box = self._text_bbox_display(ann)
+        if not box:
+            return
+        x1, y1, x2, y2 = box
+        editor = tk.Text(self.canvas, wrap=tk.WORD, undo=True, relief=tk.SOLID,
+                         borderwidth=2, highlightthickness=1,
+                         highlightbackground='#2563eb', highlightcolor='#2563eb',
+                         font=('Segoe UI', max(8, int(ann.get('font_size', 12) * self.zoom_level))))
+        editor.insert('1.0', ann.get('text', ''))
+        self._text_editor = editor
+        self._text_edit_annotation = ann
+        self._text_editor_window_id = self.canvas.create_window(
+            x1, y1, anchor=tk.NW, window=editor,
+            width=max(80, x2-x1), height=max(35, y2-y1), tags=('text_ui',))
+        # Put keyboard focus and the insertion caret inside the new text box.
+        # The delayed repeat is required on Windows because opening TabTip may
+        # briefly move foreground focus away from the Tk Text widget.
+        editor.focus_force()
+        if select_all:
+            editor.tag_add(tk.SEL, '1.0', 'end-1c')
+            editor.mark_set(tk.INSERT, '1.0')
+        else:
+            editor.mark_set(tk.INSERT, 'end-1c')
+        editor.see(tk.INSERT)
+        self.root.after_idle(
+            lambda w=editor: w.focus_force() if w.winfo_exists() else None
+        )
+        editor.bind('<Control-Return>', lambda e: (self._commit_text_editor(), 'break'))
+        editor.bind('<Escape>', lambda e: (self._cancel_text_editor(), 'break'))
+        editor.bind('<FocusOut>', self._on_text_editor_focus_out)
+
+    def _on_text_editor_focus_out(self, event=None):
+        """Save and exit editing when focus moves outside the text box."""
+        editor = self._text_editor
+        if editor is None:
+            return
+        self.root.after_idle(lambda expected=editor: (
+            self._commit_text_editor() if self._text_editor is expected else None
+        ))
+
+    def _commit_text_editor(self):
+        editor = self._text_editor
+        ann = self._text_edit_annotation
+        if editor is None or ann is None:
+            return
+        try:
+            value = editor.get('1.0', 'end-1c').rstrip()
+        except tk.TclError:
+            value = ann.get('text', '')
+        ann['text'] = value
+        if not value and ann in self.annotations:
+            self.annotations.remove(ann)
+        self._destroy_text_editor()
+        self.mark_dirty()
+        self.display()
+        if value:
+            self.selected_annotation = ann
+            self._draw_text_selection(ann)
+
+    def _cancel_text_editor(self):
+        ann = self._text_edit_annotation
+        if ann is not None and not ann.get('text') and ann in self.annotations:
+            self.annotations.remove(ann)
+        self._destroy_text_editor()
+        self.display()
+
+    def _destroy_text_editor(self):
+        if self._text_editor_window_id is not None:
+            try: self.canvas.delete(self._text_editor_window_id)
+            except Exception: pass
+        if self._text_editor is not None:
+            try: self._text_editor.destroy()
+            except Exception: pass
+        self._text_editor = None
+        self._text_editor_window_id = None
+        self._text_edit_annotation = None
+
+    def _wrap_text_for_box(self, draw, text, font, pixel_width):
+        lines = []
+        for paragraph in str(text).splitlines() or ['']:
+            words = paragraph.split()
+            if not words:
+                lines.append(''); continue
+            line = words[0]
+            for word in words[1:]:
+                trial = line + ' ' + word
+                try: width = draw.textlength(trial, font=font)
+                except Exception: width = len(trial) * 7
+                if width <= pixel_width:
+                    line = trial
+                else:
+                    lines.append(line); line = word
+            lines.append(line)
+        return '\n'.join(lines)
+
+    # ================================================================
     # DISPLAY PAGE - WITH HIGHLIGHTER, PEN AND TEXT RENDERING
     # ================================================================
 
-    def display(self):
-        """
-        Render current PDF page on canvas with all annotations (highlighters, pen, text).
-        FUNCTIONAL USE: Converts PDF page to image, scales per zoom level, draws all stored annotations.
-        Updates page label and redraws complete view after changes.
-        Render the current PDF page with all annotations
+    def _annotation_render_signature(self, page_index):
+        """Return a cheap stable signature for annotations rendered on one page."""
+        relevant = []
+        for ann in self.annotations:
+            if ann.get('page') != page_index:
+                continue
+            relevant.append((
+                ann.get('type'), ann.get('color'), ann.get('points_page'),
+                ann.get('points'), ann.get('pos_page'), ann.get('text'),
+                ann.get('bbox_page'), ann.get('closed_by'), ann.get('sr_no')
+            ))
+        return repr(relevant)
+
+    def _clear_page_render_cache(self):
+        """Release cached Tk images, normally after loading a different PDF."""
+        self._page_render_cache.clear()
+        self._page_cache_zoom = None
+
+    def schedule_display(self, preserve_view=True, delay_ms=1):
+        """Coalesce repeated redraw requests into one Tk idle-time render."""
+        if self._display_after_id is not None:
+            try:
+                self.root.after_cancel(self._display_after_id)
+            except Exception:
+                pass
+        self._display_after_id = self.root.after(
+            delay_ms, lambda: self._scheduled_display(preserve_view)
+        )
+
+    def _scheduled_display(self, preserve_view):
+        self._display_after_id = None
+        self.display(preserve_view=preserve_view)
+
+    def display(self, preserve_view=True):
+        """Render the stacked PDF view, re-rasterizing only changed pages.
+
+        The original implementation converted every PDF page to a bitmap and
+        rebuilt every annotation overlay after each stroke. On a multi-page PDF
+        that blocks Tk's single UI thread. This version caches each composed page
+        using zoom level plus a per-page annotation signature.
         """
         if not self.pdf_document:
             self.canvas.delete("all")
-            self.page_label.config(text="Page: 0/0")
+            self._update_page_toolbar()
             return
-
+        # Only show the loading overlay when there's real rasterization work
+        # ahead (cache misses) - most display() calls after the first render
+        # are cheap cache hits (e.g. adding one annotation) and shouldn't
+        # interrupt the user with a spinner. A cold multi-page render is the
+        # actual freeze-prone case this is meant to cover.
+        showed_overlay = False
         try:
-            page = self.pdf_document[self.current_page]
-            mat = fitz.Matrix(self.page_to_display_scale(), self.page_to_display_scale())
-            pix = page.get_pixmap(matrix=mat)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            self.current_page_image = np.array(img)
-            draw = ImageDraw.Draw(img, 'RGBA')
+            scale_probe = self.page_to_display_scale()
+            zoom_key_probe = round(float(self.zoom_level), 4)
+            cache_cleared = self._page_cache_zoom != zoom_key_probe
+            miss_count = 0
+            for page_index in range(len(self.pdf_document)):
+                if cache_cleared:
+                    miss_count += 1
+                    continue
+                signature = self._annotation_render_signature(page_index)
+                if (page_index, zoom_key_probe, signature) not in self._page_render_cache:
+                    miss_count += 1
+            if miss_count >= 2:
+                self.busy("Rendering PDF pages...")
+                showed_overlay = True
+        except Exception:
+            pass
+        try:
+            current_view = None
+            if preserve_view and hasattr(self, 'canvas') and self.canvas and self.canvas.winfo_exists():
+                current_view = (self.canvas.xview(), self.canvas.yview())
 
-            # Try to load a font for text
+            scale = self.page_to_display_scale()
+            zoom_key = round(float(self.zoom_level), 4)
+            if self._page_cache_zoom != zoom_key:
+                self._page_render_cache.clear()
+                self._page_cache_zoom = zoom_key
+
+            self.canvas.delete("all")
+            self.page_layout = []
+            self.page_images = []
+            page_gap = max(24, int(24 * self.zoom_level))
+            y_offset = 0
+            max_width = 0
             try:
                 font_size = max(12, int(14 * self.zoom_level))
                 font = ImageFont.truetype("arial.ttf", font_size)
-            except:
+            except Exception:
                 font = ImageFont.load_default()
 
-            for ann in self.annotations:
+            # Keep every page in one vertically stacked canvas, preserving the
+            # original scroll-down-to-change-page workflow. Cached pages are reused.
+            for page_index, page in enumerate(self.pdf_document):
+                signature = self._annotation_render_signature(page_index)
+                cache_key = (page_index, zoom_key, signature)
+                cached = self._page_render_cache.get(cache_key)
 
-                if ann.get('page') != self.current_page:
-                    continue
+                if cached is None:
+                    if showed_overlay:
+                        # Keep the spinner animating and the window responsive
+                        # to the OS while we rasterize each uncached page.
+                        self.busy(f"Rendering page {page_index + 1} of {len(self.pdf_document)}...")
+                    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                    page_image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert("RGBA")
+                    overlay = Image.new("RGBA", page_image.size, (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(overlay, 'RGBA')
 
-                ann_type = ann.get('type')
+                    for ann in self.annotations:
+                        if ann.get('page') != page_index:
+                            continue
+                        ann_type = ann.get('type')
+                        if ann_type == 'highlight' and 'points_page' in ann:
+                            points = self.page_to_display_coords(ann['points_page'])
+                            if len(points) >= 2:
+                                color_key = ann.get('color', 'yellow')
+                                rgba = self.highlighter_colors[color_key]['rgba']
+                                width = max(15, int(15 * self.zoom_level))
+                                draw.line(points, fill=rgba, width=width, joint='curve')
+                                if ann.get('closed_by') and ann.get('bbox_page'):
+                                    x1, y1, _, _ = self.bbox_page_to_display(ann['bbox_page'])
+                                    draw.ellipse([x1 + 2, y1 + 2, x1 + 14, y1 + 14], fill=(0, 128, 0, 200))
+                        elif ann_type == 'pen' and 'points' in ann:
+                            points = self.page_to_display_coords(ann['points'])
+                            if len(points) >= 2:
+                                draw.line(points, fill=(255, 0, 0, 255),
+                                          width=max(2, int(3 * self.zoom_level)), joint='curve')
+                        elif ann_type == 'text':
+                            value = ann.get('text', '')
+                            bbox = ann.get('bbox_page')
+                            if not bbox:
+                                px, py = ann.get('pos_page', (0, 0))
+                                bbox = (px, py, px + 140, py + 55)
+                                ann['bbox_page'] = bbox
+                            x1, y1, x2, y2 = self.bbox_page_to_display(bbox)
+                            if value:
+                                wrapped = self._wrap_text_for_box(draw, value, font, max(20, x2-x1-8))
+                                draw.rectangle([x1, y1, x2, y2], fill=(255, 255, 255, 220))
+                                draw.multiline_text((x1+4, y1+3), wrapped, fill=(255, 0, 0, 255),
+                                                    font=font, spacing=3)
 
-                # -------- HIGHLIGHTER STROKES --------
-                if ann_type == 'highlight' and 'points_page' in ann:
-                    points_page = ann['points_page']
-                    if len(points_page) >= 2:
-                        points_display = self.page_to_display_coords(points_page)
-                        color_key = ann.get('color', 'yellow')
-                        rgba = self.highlighter_colors[color_key]['rgba']
-                        
-                        # Draw thick semi-transparent strokes
-                        stroke_width = max(15, int(15 * self.zoom_level))
-                        for i in range(len(points_display) - 1):
-                            x1, y1 = points_display[i]
-                            x2, y2 = points_display[i + 1]
-                            draw.line([x1, y1, x2, y2], fill=rgba, width=stroke_width)
-                        
-                        # Add closed indicator if applicable
-                        if ann.get('closed_by'):
-                            bbox_display = self.bbox_page_to_display(ann['bbox_page'])
-                            cx = bbox_display[0] + 8
-                            cy = bbox_display[1] + 8
-                            draw.ellipse([cx - 6, cy - 6, cx + 6, cy + 6], fill=(0, 128, 0, 200))
+                    composed = Image.alpha_composite(page_image, overlay).convert("RGB")
+                    photo = ImageTk.PhotoImage(composed)
+                    cached = {
+                        'photo': photo,
+                        'width': composed.width, 'height': composed.height
+                    }
+                    # Keep only the newest version of this page at this zoom.
+                    stale = [k for k in self._page_render_cache
+                             if k[0] == page_index and k[1] == zoom_key]
+                    for key in stale:
+                        self._page_render_cache.pop(key, None)
+                    self._page_render_cache[cache_key] = cached
 
-                # -------- PEN STROKES --------
-                elif ann_type == 'pen' and 'points' in ann:
-                    points_page = ann['points']
-                    if len(points_page) >= 2:
-                        points_display = self.page_to_display_coords(points_page)
-                        stroke_width = max(2, int(3 * self.zoom_level))
-                        for i in range(len(points_display) - 1):
-                            x1, y1 = points_display[i]
-                            x2, y2 = points_display[i + 1]
-                            draw.line([x1, y1, x2, y2], fill='red', width=stroke_width)
+                width, height = cached['width'], cached['height']
+                max_width = max(max_width, width)
+                self.page_layout.append({
+                    'page_index': page_index, 'x': 0, 'y': y_offset,
+                    'width': width, 'height': height
+                })
+                self.page_images.append(cached['photo'])
+                self.canvas.create_image(0, y_offset, anchor=tk.NW,
+                                         image=cached['photo'], tags=(f"page_{page_index}",))
+                y_offset += height + page_gap
 
-                # -------- TEXT ANNOTATIONS --------
-                elif ann_type == 'text' and 'pos_page' in ann:
-                    pos_page = ann['pos_page']
-                    pos_display = self.page_to_display_coords(pos_page)
-                    text = ann.get('text', '')
-                    if text:
-                        # Draw text background for visibility
-                        try:
-                            bbox = draw.textbbox(pos_display, text, font=font)
-                            padding = 2
-                            draw.rectangle(
-                                [bbox[0] - padding, bbox[1] - padding,
-                                 bbox[2] + padding, bbox[3] + padding],
-                                fill=(255, 255, 200, 200)
-                            )
-                        except:
-                            pass
-                        draw.text(pos_display, text, fill='red', font=font)
-
-            self.photo = ImageTk.PhotoImage(img)
-            self.canvas.delete("all")
-            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
-            self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
-            self.page_label.config(text=f"Page: {self.current_page + 1}/{len(self.pdf_document)}")
-            self.sync_manager_stats_only()
+            self.photo = self.page_images[self.current_page] if self.page_images else None
+            self.canvas.config(scrollregion=(0, 0, max_width, max(1, y_offset)))
+            if current_view and current_view[1][0] > 0.0:
+                self.canvas.xview_moveto(current_view[0][0])
+                self.canvas.yview_moveto(current_view[1][0])
+            elif self.page_layout and 0 <= self.current_page < len(self.page_layout):
+                self.canvas.yview_moveto(self.page_layout[self.current_page]['y'] / max(1, y_offset))
+            else:
+                self.canvas.xview_moveto(0)
+                self.canvas.yview_moveto(0)
+            self._update_page_toolbar()
             self.updtoolpane()
-
         except Exception as e:
             messagebox.showerror("Error", f"Failed to display page: {e}")
+        finally:
+            if showed_overlay:
+                self.unbusy()
 
     # ================================================================
     # SAVE SESSION - WITH HIGHLIGHTER SERIALIZATION
     # ================================================================
 
-    def savesession(self):
+    def _build_session_data(self):
         """
-        Serialize all current annotations to session JSON file.
-        FUNCTIONAL USE: Writes annotations list, page references, and metadata to file.
-        Enables resuming work across quality module instances without losing annotations.
+        Build the JSON-serializable session dict from current in-memory state.
+        FUNCTIONAL USE: Shared serialization logic used by both the explicit
+        "Save Session" action and the batched/background autosave flush, so
+        there's exactly one place that defines what a session file contains.
+        Returns: dict ready for json.dump
         """
-        """Save current session to JSON file with all annotation types including highlights"""
-        if not self.pdf_document:
-            messagebox.showwarning("No PDF", "Load a PDF first before saving a session.")
-            return
-
-        if not hasattr(self, 'project_dirs') or not self.project_dirs.get("sessions"):
-            messagebox.showerror("Error", "Project directories not set up. Load a PDF first.")
-            return
-
-        save_path = os.path.join(
-            self.project_dirs["sessions"],
-            f"{self.cabinet_id}_annotations.json"
-        )
-
         data = {
             'project_name': self.project_name,
             'sales_order_no': self.sales_order_no,
@@ -1784,25 +2786,73 @@ class CircuitInspector:
             if 'pos_page' in entry:
                 pos = entry['pos_page']
                 entry['pos_page'] = [float(pos[0]), float(pos[1])]
-            
+
             # Ensure text content is saved
             if 'text' in entry:
                 entry['text'] = str(entry['text'])
 
             data['annotations'].append(entry)
-        
-        self.sync_manager_stats_only()
+
+        return data
+
+    def _write_session_file(self):
+        """
+        Write the current session to its JSON file on disk.
+        FUNCTIONAL USE: The actual disk write, split out from savesession()
+        so flush_pending_saves() (background autosave / final crash-safe
+        flush) can reuse it without duplicating path resolution or
+        triggering the "no PDF loaded" user-facing warnings that the
+        explicit menu action shows.
+        Returns: True on success, False on failure (errors are logged, not raised).
+        """
+        if not hasattr(self, 'project_dirs') or not self.project_dirs.get("sessions"):
+            return False
+
+        save_path = os.path.join(
+            self.project_dirs["sessions"],
+            f"{self.cabinet_id}_annotations.json"
+        )
+
+        data = self._build_session_data()
 
         try:
             with open(save_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            
-            
-
+            return True
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save session:\n{e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[WARN] Failed to write session file: {e}")
+            return False
+
+    def savesession(self):
+        """
+        Serialize all current annotations to session JSON file.
+        FUNCTIONAL USE: Writes annotations list, page references, and metadata to file.
+        Enables resuming work across quality module instances without losing annotations.
+        This is the explicit user-triggered save (File menu / Ctrl+S) - it always
+        does a real, immediate sync + write, unlike the batched autosave.
+        """
+        """Save current session to JSON file with all annotation types including highlights"""
+        if self._text_editor is not None:
+            self._commit_text_editor()
+        if not self.pdf_document:
+            messagebox.showwarning("No PDF", "Load a PDF first before saving a session.")
+            return
+
+        if not hasattr(self, 'project_dirs') or not self.project_dirs.get("sessions"):
+            messagebox.showerror("Error", "Project directories not set up. Load a PDF first.")
+            return
+
+        self.busy("Saving session...")
+        try:
+            self.sync_manager_stats_only()
+
+            if self._write_session_file():
+                self._dirty = False
+                self._last_flush_time = time.monotonic()
+            else:
+                messagebox.showerror("Error", "Failed to save session. See console for details.")
+        finally:
+            self.unbusy()
 
     # ================================================================
     # LOAD SESSION - WITH HIGHLIGHTER DESERIALIZATION
@@ -1833,10 +2883,18 @@ class CircuitInspector:
         Args: path - Full path to session JSON file
         """
         """Load session from a specific JSON file path with all annotation types"""
+        self.stopmultimark()  # never leave multi-mark mode active across a session load
+        # Track whether THIS call opened the overlay, so we don't hide it out
+        # from under a caller (loadpdf/loadrecentdb) that already has it open.
+        opened_here = getattr(self, '_busy_overlay', None) is None
+        if opened_here:
+            self.busy("Loading session...")
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception as e:
+            if opened_here:
+                self.unbusy()
             messagebox.showerror("Session Load Error", f"Failed to load session:\n{e}")
             return
 
@@ -1846,6 +2904,7 @@ class CircuitInspector:
         self.cabinet_id = data.get('cabinet_id', getattr(self, "cabinet_id", ""))
         self.current_page = data.get('current_page', 0)
         self.zoom_level = data.get('zoom_level', 1.0)
+        self._update_zoom_toolbar_label()
         self.current_sr_no = data.get('current_sr_no', self.current_sr_no)
 
         # Restore session refs
@@ -1859,6 +2918,11 @@ class CircuitInspector:
         
         for entry in data.get('annotations', []):
             ann = entry.copy()
+            # Backward compatibility for sessions saved before the error
+            # highlighter changed from orange to pink.
+            if ann.get('color') == 'orange':
+                ann['color'] = 'pink'
+            ann.setdefault('_undo_id', uuid.uuid4().hex)
 
             # ===== HIGHLIGHTER ANNOTATIONS - Convert lists to tuples =====
             if 'points_page' in ann:
@@ -1890,7 +2954,11 @@ class CircuitInspector:
             if ann.get('ref_no'):
                 self.session_refs.add(str(ann['ref_no']).strip())
 
-        self.display()
+        try:
+            self.display(preserve_view=False)  # shows its own overlay if the render is heavy
+        finally:
+            if opened_here:
+                self.unbusy()
         
 
 
@@ -2018,6 +3086,7 @@ class CircuitInspector:
             messagebox.showerror("Error", "Project directories not set up.")
             return
     
+        self.busy("Exporting annotated PDF...")
         try:
             save_path = os.path.join(
                 self.project_dirs["annotated_drawings"],
@@ -2026,7 +3095,10 @@ class CircuitInspector:
     
             # Create output PDF
             out_doc = fitz.open()
-            for pnum in range(len(self.pdf_document)):
+            total_pages = len(self.pdf_document)
+            for pnum in range(total_pages):
+                if total_pages > 3:
+                    self.busy(f"Copying page {pnum + 1} of {total_pages}...")
                 out_doc.insert_pdf(self.pdf_document, from_page=pnum, to_page=pnum)
     
             # Open Excel for SR No lookup
@@ -2039,6 +3111,7 @@ class CircuitInspector:
                 except:
                     pass
     
+            self.busy("Drawing annotations...")
             # Draw annotations
             for ann in self.annotations:
                 p = ann.get('page')
@@ -2074,8 +3147,8 @@ class CircuitInspector:
                             annot.set_opacity(0.4)  # Semi-transparent
                             annot.update()
                             
-                            # Add SR number text for BOTH orange AND green highlights
-                            if color_key in ['orange', 'green'] and 'bbox_page' in ann:
+                            # Add SR number text for BOTH pink AND green highlights
+                            if color_key in ['pink', 'green'] and 'bbox_page' in ann:
                                 sr_text = None
                                 row = ann.get('excel_row')
                                 sr_no = ann.get('sr_no')  # Try to get from annotation first
@@ -2102,7 +3175,7 @@ class CircuitInspector:
                                     # Position text beside the highlight
                                     text_pos = self.textpos(bbox_rect, target_page)
                                     
-                                    # Use different color for green vs orange
+                                    # Use different color for green vs pink
                                     text_color = (0, 0.5, 0) if color_key == 'green' else (1, 0, 0)
                                     
                                     try:
@@ -2150,6 +3223,7 @@ class CircuitInspector:
             if wb:
                 wb.close()
     
+            self.busy("Saving exported PDF...")
             out_doc.save(save_path)
             out_doc.close()
             self.sync_manager_stats_only()
@@ -2160,12 +3234,71 @@ class CircuitInspector:
             messagebox.showerror("Error", f"Failed to export annotated PDF:\n{e}")
             import traceback
             traceback.print_exc()
+        finally:
+            self.unbusy()
 
 
     # ================================================================
     # UI SETUP WITH HIGHLIGHTER CONTROLS
     # ================================================================
+    def bind_global_keyboard_popup(self):
+        """
+        Globally bind FocusIn/FocusOut on all Entry and Text widgets (including those
+        inside dialogs like simpledialog) to show/hide the on-screen keyboard.
+        FUNCTIONAL USE: Ensures the popup keyboard appears automatically whenever the
+        user taps into ANY text box anywhere in the app, without editing every dialog.
+        Call this once in __init__ after uisetup().
+        """
+        def restore_text_focus(widget):
+            """Keep keyboard focus and the insertion caret inside the tapped field."""
+            try:
+                if not widget.winfo_exists():
+                    return
+                widget.focus_force()
+                if isinstance(widget, tk.Text):
+                    widget.mark_set(tk.INSERT, widget.index(tk.INSERT))
+                    widget.see(tk.INSERT)
+                else:
+                    widget.icursor(tk.INSERT)
+            except (tk.TclError, AttributeError):
+                pass
 
+        def on_focus_in(event):
+            widget = event.widget
+            if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry)):
+                # Make the caret visible immediately. TabTip can briefly take
+                # foreground focus while opening, so restore it again afterward.
+                restore_text_focus(widget)
+                show_onscreen_keyboard()
+                self.root.after_idle(lambda w=widget: restore_text_focus(w))
+                self.root.after(250, lambda w=widget: restore_text_focus(w))
+
+        def on_focus_out(event):
+            widget = event.widget
+            if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry)):
+                # Small delay avoids flicker when focus moves between two text fields
+                self.root.after(150, self._maybe_hide_keyboard)
+
+        self.root.bind_class("Entry", "<FocusIn>", on_focus_in, add="+")
+        self.root.bind_class("Text", "<FocusIn>", on_focus_in, add="+")
+        self.root.bind_class("TEntry", "<FocusIn>", on_focus_in, add="+")
+
+        self.root.bind_class("Entry", "<FocusOut>", on_focus_out, add="+")
+        self.root.bind_class("Text", "<FocusOut>", on_focus_out, add="+")
+        self.root.bind_class("TEntry", "<FocusOut>", on_focus_out, add="+")
+
+    def _maybe_hide_keyboard(self):
+        """
+        Hide the on-screen keyboard only if focus has actually left a text-entry widget.
+        FUNCTIONAL USE: Prevents keyboard flicker when tabbing between input fields.
+        """
+        try:
+            focused = self.root.focus_get()
+        except Exception:
+            focused = None
+
+        if not isinstance(focused, (tk.Entry, tk.Text, ttk.Entry)):
+            hide_onscreen_keyboard()
     def uisetup(self):
         """
         Create complete user interface with toolbar, menu, canvas, and status bar.
@@ -2178,6 +3311,7 @@ class CircuitInspector:
         # Main toolbar
         toolbar = tk.Frame(self.root, bg='#1e293b', height=80)
         toolbar.pack(side=tk.TOP, fill=tk.X)
+        self.toolbar = toolbar
         
         # Enhanced Menu Bar
         menubar = Menu(self.root, bg='#1e293b', fg='white', activebackground='#3b82f6')
@@ -2202,16 +3336,13 @@ class CircuitInspector:
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Review Checklist", command=self.reviewnow, accelerator="Ctrl+R")
         tools_menu.add_command(label="Punch Closing Mode", command=self.punchclosing, accelerator="Ctrl+Shift+P")
+        tools_menu.add_command(label="Edit Existing Punch", command=self.editexistingpunch, accelerator="Ctrl+Shift+U")
         tools_menu.add_separator()
         tools_menu.add_command(label="Verify ", command=self.viewhandbacks, accelerator="Ctrl+Shift+V")
         
         # View Menu
         view_menu = Menu(menubar, tearoff=0, bg='#1e293b', fg='white', activebackground='#3b82f6')
-        menubar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_command(label="Zoom In", command=self.zoomin, accelerator="Ctrl++")
-        view_menu.add_command(label="Zoom Out", command=self.zoomout, accelerator="Ctrl+-")
-        view_menu.add_command(label="Reset Zoom", command=lambda: setattr(self, 'zoom_level', 1.0) or self.display())
-        
+        menubar.add_cascade(label="View", menu=view_menu)        
         # Keyboard shortcuts
         self.root.bind_all("<Control-o>", lambda e: self.loadpdf())
         self.root.bind_all("<Control-s>", lambda e: self.savesession())
@@ -2220,11 +3351,11 @@ class CircuitInspector:
         self.root.bind_all("<Control-r>", lambda e: self.reviewnow())
         self.root.bind_all("<Control-z>", lambda e: self.undolast())
         self.root.bind_all("<Control-P>", lambda e: self.punchclosing())
+        self.root.bind_all("<Control-U>", lambda e: self.editexistingpunch())
         self.root.bind_all("<Control-E>", lambda e: self.openxcl())
         self.root.bind_all("<Control-V>", lambda e: self.viewhandbacks())
-        self.root.bind_all("<Control-plus>", lambda e: self.zoom++())
-        self.root.bind_all("<Control-minus>", lambda e: self.zoomout())
         self.root.bind_all("<Escape>", lambda e: self.deactivate())
+        self.root.bind_all("<Delete>", self._delete_selected_text_box)
         
         # Modern button style
         btn_style = {
@@ -2244,21 +3375,15 @@ class CircuitInspector:
         
         tk.Button(left_frame, text="Open PDF", command=self.loadpdf, **btn_style).pack(side=tk.LEFT, padx=3)
         
-        # Recent Projects Dropdown
-        recent_frame = tk.Frame(left_frame, bg='#1e293b')
-        recent_frame.pack(side=tk.LEFT, padx=8)
-        
-        tk.Label(recent_frame, text="Recent:", bg='#1e293b', fg='#94a3b8',
-                font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.recent_var = tk.StringVar(value="Select Project...")
-        self.recent_dropdown = tk.OptionMenu(recent_frame, self.recent_var,
-                                            "Select Project...",
-                                            command=self.loadrecprojui)
-        self.recent_dropdown.config(bg='#334155', fg='white', font=('Segoe UI', 9),
-                                   width=22, relief=tk.FLAT, borderwidth=0)
-        self.recent_dropdown.pack(side=tk.LEFT)
-        
+        # All Projects browser. This replaces the old limited recent-project dropdown.
+        projects_frame = tk.Frame(left_frame, bg='#1e293b')
+        projects_frame.pack(side=tk.LEFT, padx=8)
+        tk.Button(
+            projects_frame, text="Projects & Cabinets", command=self.show_project_browser,
+            bg='#334155', fg='white', activebackground='#475569', activeforeground='white',
+            font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, borderwidth=0,
+            padx=14, pady=10, cursor='hand2'
+        ).pack(side=tk.LEFT)
         # Center - HIGHLIGHTER COLOR PICKER (Circular button) - UPDATED
         highlighter_frame = tk.Frame(toolbar, bg='#1e293b')
         highlighter_frame.pack(side=tk.LEFT, padx=30)
@@ -2301,34 +3426,33 @@ class CircuitInspector:
             cursor='hand2'
         )
         self.dropdown_btn.pack(side=tk.LEFT, padx=(4, 0))
-        
+
+        # NOTE: The "already marked / not marked" decision is no longer a
+        # persistent toolbar toggle. It's now asked per-highlight, right
+        # after an pink (error) highlight is drawn - see leftrel().
+
         # Navigation
         center_frame = tk.Frame(toolbar, bg='#1e293b')
         center_frame.pack(side=tk.LEFT, padx=20)
         
-        self.page_label = tk.Label(center_frame, text="Page: 0/0", bg='#1e293b',
-                                   fg='white', font=('Segoe UI', 10, 'bold'))
-        self.page_label.pack(side=tk.LEFT, padx=10)
-        
-        nav_btn_style = btn_style.copy()
-        nav_btn_style['bg'] = '#64748b'
-        
-        tk.Button(center_frame, text="<", command=self.prev, width=3,
-                 **nav_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(center_frame, text=">", command=self.next, width=3,
-                 **nav_btn_style).pack(side=tk.LEFT, padx=2)
-        
-        # Zoom controls
-        zoom_frame = tk.Frame(center_frame, bg='#1e293b')
-        zoom_frame.pack(side=tk.LEFT, padx=15)
-        
-        zoom_btn_style = btn_style.copy()
-        zoom_btn_style['bg'] = '#10b981'
-        
-        tk.Button(zoom_frame, text="🔍+", command=self.zoomin, width=4,
-                 **zoom_btn_style).pack(side=tk.LEFT, padx=2)
-        tk.Button(zoom_frame, text="🔍−", command=self.zoomout, width=4,
-                 **zoom_btn_style).pack(side=tk.LEFT, padx=2)
+        tk.Label(center_frame, text="Page:", bg='#1e293b', fg='white',
+                 font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(4, 3))
+        self.page_var = tk.StringVar(value="0")
+        self.page_entry = tk.Entry(center_frame, textvariable=self.page_var, width=5,
+                                   justify='center', font=('Segoe UI', 10, 'bold'))
+        self.page_entry.pack(side=tk.LEFT)
+        self.page_entry.bind('<FocusIn>', self._on_page_entry_focus)
+        self.page_entry.bind('<FocusOut>', self._on_page_entry_focus_out)
+        # Keep the outside-click hook as a secondary path for widgets that take
+        # focus unusually. The guarded FocusOut path is the reliable primary path.
+        # FocusOut alone is unreliable. This application-level click binding
+        # applies a typed page number whenever the click is outside the field.
+        self.root.bind_all('<ButtonPress-1>', self._apply_page_on_outside_click, add='+')
+        self.page_total_label = tk.Label(center_frame, text="/ 0", bg='#1e293b',
+                                         fg='white', font=('Segoe UI', 10, 'bold'))
+        self.page_total_label.pack(side=tk.LEFT, padx=(3, 10))
+        # Compatibility alias for older code paths that call page_label.config().
+        self.page_label = self.page_total_label
         
         # Tool section
         tool_frame = tk.Frame(toolbar, bg='#1e293b')
@@ -2391,32 +3515,48 @@ class CircuitInspector:
         tk.Button(right_frame, text="Handover",
                  command=self.handover,
                  **handover_btn_style).pack(side=tk.RIGHT, padx=3)
+
+        # -------- Zoom dropdown --------
+        # A simple toolbar dropdown replaces the floating slider and pinch
+        # handlers. Changes are debounced and rendered once to avoid lag.
+        self.setup_toolbar_zoom(toolbar)
         
         # Canvas with scrollbars
         canvas_frame = tk.Frame(self.root, bg='#f1f5f9')
-        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        
-        v_scrollbar = tk.Scrollbar(canvas_frame, orient=tk.VERTICAL)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+
+        # ---- Vertical scrollbar container (holds scrollbar + page number popup) ----
+        v_scroll_container = tk.Frame(canvas_frame, bg='#f1f5f9')
+        v_scroll_container.pack(side=tk.RIGHT, fill=tk.Y)
+
+        v_scrollbar = tk.Scrollbar(v_scroll_container, orient=tk.VERTICAL, width=12)
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        h_scrollbar = tk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
+
+        h_scrollbar = tk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, width=12)
         h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
-        
+
         self.canvas = tk.Canvas(canvas_frame, bg='#f8fafc',
                                yscrollcommand=v_scrollbar.set,
                                xscrollcommand=h_scrollbar.set,
                                highlightthickness=0)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
+        # NEW: disable OS-level touch gesture translation on this canvas so
+        # touch drags reach leftclick/leftdrag/leftrel instead of being
+        # intercepted as a pan/scroll gesture by Windows.
+        self.canvas.update_idletasks()  # ensure winfo_id() is valid
+        self.root.after(50, self._apply_touch_gesture_fix)
+
         v_scrollbar.config(command=self.canvas.yview)
         h_scrollbar.config(command=self.canvas.xview)
+
+        self._setup_scrollbar_hover_effects(v_scrollbar, v_scroll_container)
         
         # Bind mouse events
         self.canvas.bind("<ButtonPress-1>", self.leftclick)
         self.canvas.bind("<B1-Motion>", self.leftdrag)
         self.canvas.bind("<ButtonRelease-1>", self.leftrel)
         self.canvas.bind("<Double-Button-1>", self.doubleclick)
-        self.canvas.bind("<Double-Button-3>", self.doubleright)
         self._bind_display_mouse_controls()
         
         # Modern status bar
@@ -2427,6 +3567,126 @@ class CircuitInspector:
         tk.Label(status_bar, text=instructions_text, bg='#334155', fg='#e2e8f0',
                 font=('Segoe UI', 9), pady=10).pack()
 
+    def _apply_touch_gesture_fix(self):
+        """
+        Configure Windows touch feedback and install canvas pinch handling.
+        FUNCTIONAL USE: Called shortly after canvas creation once the widget
+        has a valid native window handle. Retries briefly if the handle
+        isn't ready yet.
+        """
+        if os.name != 'nt':
+            return
+
+        try:
+            hwnd = self.canvas.winfo_id()
+            if not hwnd:
+                self.root.after(100, self._apply_touch_gesture_fix)
+                return
+
+            success = configure_touch_feedback(hwnd)
+            self._touch_gesture_fix_applied = success
+            self.setup_canvas_pinch_zoom()
+
+            if not success:
+                print("[WARN] Touch feedback settings were unavailable; input remains enabled.")
+        except Exception as e:
+            print(f"[WARN] _apply_touch_gesture_fix error: {e}")
+
+    def _setup_scrollbar_hover_effects(self, v_scrollbar, v_scroll_container):
+        """
+        Make the vertical scrollbar grow wider on hover/press and show the
+        current page number as a floating popup tooltip beside it.
+        FUNCTIONAL USE: Improves touch/mouse usability by enlarging the scrollbar
+        hit-area during interaction and giving instant page-position feedback via
+        a small borderless popup window (like a tooltip) rather than inline UI.
+        Args: v_scrollbar - the Scrollbar widget, v_scroll_container - its parent Frame
+        """
+        self._v_scrollbar = v_scrollbar
+        self._v_scroll_container = v_scroll_container
+        self._scrollbar_normal_width = 12
+        self._scrollbar_active_width = 22
+        self._page_popup = None
+
+        def grow(event=None):
+            v_scrollbar.config(width=self._scrollbar_active_width)
+            self._show_page_badge()
+
+        def shrink(event=None):
+            if not getattr(self, '_scrollbar_dragging', False):
+                v_scrollbar.config(width=self._scrollbar_normal_width)
+                self._hide_page_badge()
+
+        def on_press(event=None):
+            self._scrollbar_dragging = True
+            grow()
+
+        def on_release(event=None):
+            self._scrollbar_dragging = False
+            self.root.after(600, shrink)
+
+        def on_motion(event=None):
+            self._show_page_badge()
+
+        v_scrollbar.bind("<Enter>", grow)
+        v_scrollbar.bind("<Leave>", shrink)
+        v_scrollbar.bind("<ButtonPress-1>", on_press)
+        v_scrollbar.bind("<ButtonRelease-1>", on_release)
+        v_scrollbar.bind("<B1-Motion>", on_motion)
+
+    def _show_page_badge(self):
+        """
+        Display a small borderless popup window with the current page number,
+        positioned beside the vertical scrollbar.
+        FUNCTIONAL USE: Called while hovering/dragging the scrollbar so the user
+        always knows which page they're scrolling to. Uses a Toplevel popup
+        (tooltip-style) instead of inline UI so it doesn't shift layout.
+        """
+        if not self.pdf_document:
+            return
+
+        self._update_current_page_from_scroll()
+
+        total = len(self.pdf_document)
+        current = self.current_page + 1
+        text = f"Page {current}/{total}"
+
+        if self._page_popup is None or not self._page_popup.winfo_exists():
+            self._page_popup = tk.Toplevel(self.root)
+            self._page_popup.overrideredirect(True)
+            self._page_popup.attributes('-topmost', True)
+            self._page_popup_label = tk.Label(
+                self._page_popup, text=text, bg='#1e293b', fg='white',
+                font=('Segoe UI', 9, 'bold'), padx=8, pady=4,
+                relief=tk.SOLID, borderwidth=1
+            )
+            self._page_popup_label.pack()
+        else:
+            self._page_popup_label.config(text=text)
+
+        # Position just to the left of the scrollbar, vertically centered on it
+        sb_x = self._v_scrollbar.winfo_rootx()
+        sb_y = self._v_scrollbar.winfo_rooty()
+        sb_h = self._v_scrollbar.winfo_height()
+
+        popup_w = self._page_popup_label.winfo_reqwidth()
+        popup_h = self._page_popup_label.winfo_reqheight()
+
+        popup_x = sb_x - popup_w - 8
+        popup_y = sb_y + (sb_h // 2) - (popup_h // 2)
+
+        self._page_popup.geometry(f"+{popup_x}+{popup_y}")
+        self._page_popup.deiconify()
+
+    def _hide_page_badge(self):
+        """
+        Destroy/hide the page-number popup window.
+        FUNCTIONAL USE: Called after the user stops interacting with the scrollbar.
+        """
+        if getattr(self, '_page_popup', None) is not None:
+            try:
+                self._page_popup.withdraw()
+            except tk.TclError:
+                self._page_popup = None
     def _bind_display_mouse_controls(self):
         """Register wheel scrolling handlers for the PDF display canvas."""
         if getattr(self, '_display_mouse_controls_bound', False):
@@ -2458,7 +3718,12 @@ class CircuitInspector:
         return False
 
     def _on_display_mousewheel(self, event):
-        """Scroll the display canvas with the mouse wheel when hovering over it."""
+        if time.monotonic() < getattr(self, '_touch_scroll_lock_until', 0.0):
+            return "break"
+
+        if self.active_highlighter or self.tool_mode in ("pen", "text") or self.drawing:
+            return "break"
+
         if not self._is_pointer_over_canvas():
             return
 
@@ -2473,8 +3738,8 @@ class CircuitInspector:
         if delta == 0:
             return
 
-        horizontal = bool(getattr(event, 'state', 0) & 0x0001)
         try:
+            horizontal = bool(getattr(event, 'state', 0) & 0x0001)
             if horizontal:
                 self.canvas.xview_scroll(-delta, "units")
             else:
@@ -2482,7 +3747,35 @@ class CircuitInspector:
         except tk.TclError:
             return
 
+        self._update_current_page_from_scroll()
         return "break"
+
+    def _update_current_page_from_scroll(self):
+        """
+        Recalculate self.current_page based on canvas scroll position and refresh
+        the page-number label text if the toolbar label exists.
+        FUNCTIONAL USE: Keeps the page indicator (toolbar label + scrollbar popup)
+        accurate as the user scrolls through the stacked multi-page PDF view.
+        """
+        if not self.pdf_document or not self.page_layout:
+            return
+
+        try:
+            top_fraction = self.canvas.yview()[0]
+            scroll_region = self.canvas.cget("scrollregion").split()
+            total_height = float(scroll_region[3]) if len(scroll_region) == 4 else 1
+        except (tk.TclError, IndexError, ValueError):
+            return
+
+        viewport_center = (self.canvas.winfo_height() / 2.0)
+        y_pos = (top_fraction * total_height) + viewport_center
+        for layout in self.page_layout:
+            if layout['y'] <= y_pos < layout['y'] + layout['height']:
+                self.current_page = layout['page_index']
+                break
+
+        self._update_page_toolbar()
+    
 
 
     # ================================================================
@@ -2556,9 +3849,9 @@ class CircuitInspector:
     def colorchange(self, color_key):
         """
         Switch active highlighter color for quality markup.
-        FUNCTIONAL USE: Changes current highlighter to specified color (yellow/green/orange).
+        FUNCTIONAL USE: Changes current highlighter to specified color (yellow/green/pink).
         Updates button state and readies tool for next annotation with new color.
-        Args: color_key - String key (yellow, green, orange) from highlighter_colors dict
+        Args: color_key - String key (yellow, green, pink) from highlighter_colors dict
         """
         """Change the highlighter color"""
         self.current_color_key = color_key
@@ -2568,6 +3861,24 @@ class CircuitInspector:
             self.active_highlighter = color_key
             self.root.config(cursor="pencil")
 
+
+    def _return_to_touch_mode(self):
+        """Reset transient annotation state and restore touch pan/scroll mode."""
+        if self.active_highlighter or self.tool_mode is not None:
+            return
+        self.drawing = False
+        self.drawing_type = None
+        self.drawing_page = None
+        self._panning = False
+        self.highlight_points = []
+        self.pen_points = []
+        self._text_box_start = None
+        self._touch_scroll_lock_until = 0.0
+        self.cleartemp()
+        self._clear_text_selection()
+        self.root.config(cursor="")
+        if hasattr(self, "canvas"):
+            self.canvas.config(cursor="")
 
     def togglehighlighter(self):
         """
@@ -2580,6 +3891,7 @@ class CircuitInspector:
             self.active_highlighter = None
             self.root.config(cursor="")
             self.colorbutton()
+            self._return_to_touch_mode()
         else:
             self.active_highlighter = self.current_color_key
             self.root.config(cursor="pencil")
@@ -2599,14 +3911,20 @@ class CircuitInspector:
         """
         """Set tool mode (pen or text)"""
         if self.active_highlighter:
-            self.togglehighlighter()
-        
+            return
+
+        # While multi-mark mode is active, only the highlighter is allowed -
+        # pen/text stay locked until the user presses Stop.
+        if getattr(self, 'multimark_active', False):
+            return
+
         if self.tool_mode == mode:
             self.tool_mode = None
             if mode == "pen":
                 self.pen_btn.config(bg='#334155', relief=tk.FLAT)
             else:
                 self.text_btn.config(bg='#334155', relief=tk.FLAT)
+            self._return_to_touch_mode()
         else:
             self.tool_mode = mode
             if mode == "pen":
@@ -2623,10 +3941,17 @@ class CircuitInspector:
         Bound to Escape key for quick tool deactivation.
         """
         """Deactivate all tools and highlighters"""
+        if self._text_editor is not None:
+            self._commit_text_editor()
+        self.selected_annotation = None
+        for item in self._text_selection_ids:
+            self.canvas.delete(item)
+        self._text_selection_ids = []
         if self.active_highlighter:
             self.togglehighlighter()
         if self.tool_mode:
             self.toolmode(self.tool_mode)
+        self._return_to_touch_mode()
 
     def updtoolpane(self):
         """Update annotation statistics"""
@@ -2638,7 +3963,7 @@ class CircuitInspector:
         Display temporary status message in status bar with color indication.
         FUNCTIONAL USE: Provides visual feedback for user actions (success, warning, info).
         Message auto-clears after timeout.
-        Args: message - Text to display, bg - background color (green for success, orange for warning)
+        Args: message - Text to display, bg - background color (green for success, pink for warning)
         """
         """Show a temporary status message"""
         status_label = tk.Label(
@@ -2655,50 +3980,340 @@ class CircuitInspector:
         self.root.after(1500, lambda: status_label.destroy())
 
     # ================================================================
+    # LOADING OVERLAY (for expensive/blocking operations)
+    # ================================================================
+    #
+    # Tk is single-threaded: a long synchronous call (PDF load, full
+    # multi-page render, PDF export, session restore, etc.) freezes the
+    # window and the OS shows "Not Responding" because no events get
+    # pumped while that call runs. This app doesn't use worker threads
+    # for those calls, so the fix here is:
+    #   1. Show a modal overlay immediately (busy()).
+    #   2. Force Tk to actually paint it with update_idletasks()/update()
+    #      BEFORE starting the expensive work.
+    #   3. Run the expensive work (still synchronous - that part is
+    #      unavoidable without threading it - but now the user sees a
+    #      spinner/message instead of a frozen, greyed-out window).
+    #   4. Hide the overlay (unbusy()) once done, even on error, via
+    #      try/finally at each call site.
+    # This does not make the work itself faster; it replaces the "Not
+    # Responding" freeze with an explicit, intentional loading state.
+
+    def busy(self, message="Working..."):
+        """
+        Show a modal loading overlay with a spinner and message.
+        FUNCTIONAL USE: Call immediately before starting an expensive
+        synchronous operation (PDF load/export, full render, session
+        restore) so the user sees deliberate progress instead of the
+        window appearing to hang / OS marking it "Not Responding".
+        Safe to call again while already showing - just updates the message.
+        Always pair with a matching self.unbusy() in a finally block.
+        """
+        try:
+            if getattr(self, '_busy_overlay', None) is not None and self._busy_overlay.winfo_exists():
+                self._busy_message_var.set(message)
+                self._busy_overlay.lift()
+                self._spin_busy_overlay()
+                self.root.update_idletasks()
+                return
+
+            overlay = tk.Toplevel(self.root)
+            overlay.overrideredirect(True)
+            overlay.attributes('-topmost', True)
+            try:
+                overlay.attributes('-alpha', 0.97)
+            except tk.TclError:
+                pass
+            overlay.configure(bg='#0f172a')
+            self._busy_overlay = overlay
+
+            # Cover the whole main window so nothing underneath is clickable.
+            self.root.update_idletasks()
+            x = self.root.winfo_rootx()
+            y = self.root.winfo_rooty()
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+            overlay.geometry(f"{max(w,1)}x{max(h,1)}+{x}+{y}")
+
+            # Semi-dark full-window scrim so the frozen-looking background
+            # doesn't show through, plus a centered card with a spinner.
+            scrim = tk.Frame(overlay, bg='#0f172a')
+            scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+            card = tk.Frame(scrim, bg='#1e293b', highlightthickness=1,
+                             highlightbackground='#334155')
+            card.place(relx=0.5, rely=0.5, anchor='center')
+
+            self._busy_spinner_var = tk.StringVar(value='◐')
+            tk.Label(card, textvariable=self._busy_spinner_var, bg='#1e293b',
+                     fg='#60a5fa', font=('Segoe UI', 26)).pack(padx=36, pady=(28, 6))
+
+            self._busy_message_var = tk.StringVar(value=message)
+            tk.Label(card, textvariable=self._busy_message_var, bg='#1e293b',
+                     fg='white', font=('Segoe UI', 11, 'bold')).pack(padx=36, pady=(0, 26))
+
+            self._busy_spin_frames = ['◐', '◓', '◑', '◒']
+            self._busy_spin_index = 0
+            self._busy_spin_after_id = None
+
+            overlay.lift()
+            overlay.focus_force()
+            self._spin_busy_overlay()
+
+            # Force Tk to actually draw the overlay right now, before the
+            # caller goes on to do the expensive blocking work - otherwise
+            # the overlay would just sit in the event queue, unseen, while
+            # the freeze happens exactly as before.
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            self._busy_overlay = None
+
+    def _spin_busy_overlay(self):
+        """Advance the busy-overlay spinner glyph. Re-arms itself while the overlay exists."""
+        overlay = getattr(self, '_busy_overlay', None)
+        if overlay is None or not overlay.winfo_exists():
+            return
+        try:
+            self._busy_spin_index = (self._busy_spin_index + 1) % len(self._busy_spin_frames)
+            self._busy_spinner_var.set(self._busy_spin_frames[self._busy_spin_index])
+        except (tk.TclError, AttributeError):
+            return
+        self._busy_spin_after_id = self.root.after(160, self._spin_busy_overlay)
+
+    def busy_pump(self):
+        """
+        Let Tk repaint the overlay/spinner mid-operation without ending the
+        busy state. Call this between chunks of a long operation that has
+        natural checkpoints (e.g. per-page in a loop) so the spinner keeps
+        animating and the window never looks stuck, even during the
+        unavoidable synchronous work.
+        """
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            pass
+
+    def unbusy(self):
+        """Hide the loading overlay. Always call from a finally block."""
+        after_id = getattr(self, '_busy_spin_after_id', None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+            self._busy_spin_after_id = None
+        overlay = getattr(self, '_busy_overlay', None)
+        self._busy_overlay = None
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except tk.TclError:
+                pass
+
+    # ================================================================
     # UNDO FUNCTIONALITY
     # ================================================================
 
     def addtostack(self, action_type, annotation):
-        """
-        Push annotation action onto undo stack for later reversal.
-        FUNCTIONAL USE: Maintains undo history limited to 50 most recent actions.
-        Allows user to revert mistakes with Ctrl+Z during quality inspection.
-        Args: action_type - String ('add_annotation', 'delete'), annotation - Annotation data
-        """
-        """Add an action to the undo stack"""
+        """Store an undo action using a unique ID, never dictionary equality."""
+        annotation.setdefault('_undo_id', uuid.uuid4().hex)
         self.undo_stack.append({
             'type': action_type,
-            'annotation': annotation.copy()
+            'annotation_id': annotation['_undo_id'],
+            'excel_row': annotation.get('excel_row'),
+            'sr_no': annotation.get('sr_no')
         })
-        
         if len(self.undo_stack) > self.max_undo:
             self.undo_stack.pop(0)
 
+    def _remove_punch_excel_row(self, target_row):
+        """Remove one punch row without touching any earlier punch entries."""
+        if not target_row or not self.excel_file or not os.path.exists(self.excel_file):
+            return
+        wb = load_workbook(self.excel_file)
+        ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
+        last_row = target_row
+        while self.readcell(ws, last_row + 1, self.punch_cols['sr_no']) is not None:
+            last_row += 1
+        columns = list(self.punch_cols.values())
+        for row in range(target_row, last_row):
+            for col in columns:
+                self.writecell(ws, row, col, self.readcell(ws, row + 1, col))
+        for col in columns:
+            self.writecell(ws, last_row, col, None)
+        wb.save(self.excel_file)
+        wb.close()
+        for ann in self.annotations:
+            row = ann.get('excel_row')
+            if isinstance(row, int) and row > target_row:
+                ann['excel_row'] = row - 1
+
     def undolast(self):
+        """Undo exactly the latest annotation.
+
+        For a normal punch-creating highlight this also removes the Excel
+        punch row it created. For a multi-mark highlight (an extra highlight
+        attached to an ALREADY-EXISTING punch via multi-mark mode), the
+        annotation is simply detached/removed - the punch itself, its Excel
+        row, and any of its other highlights are left completely untouched,
+        since this highlight never owned that row in the first place.
         """
-        Reverse most recent annotation change from undo stack.
-        FUNCTIONAL USE: Removes last action and redraws canvas to show previous state.
-        Bound to Ctrl+Z for quick access during quality inspection.
-        """
-        """Undo the last annotation action"""
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
             return
-        
-        last_action = self.undo_stack.pop()
-        
-        if last_action['type'] == 'add_annotation':
-            annotation = last_action['annotation']
-            if annotation in self.annotations:
-                self.annotations.remove(annotation)
-                self.display()
-                self.flashstat("Annotation removed", bg='#10b981')
-        
+        action = self.undo_stack.pop()
+        annotation_id = action.get('annotation_id')
+        index = next((i for i, ann in enumerate(self.annotations)
+                      if ann.get('_undo_id') == annotation_id), None)
+        if index is None:
+            messagebox.showinfo("Nothing to Undo", "The selected item was already removed.")
+            return
+        annotation = self.annotations[index]
+        is_multimark_extra = bool(annotation.get('multimark'))
+        excel_row = None if is_multimark_extra else (annotation.get('excel_row') or action.get('excel_row'))
+        try:
+            if excel_row:
+                self._remove_punch_excel_row(int(excel_row))
+            self.annotations.pop(index)
+            self.session_refs = {str(a.get('ref_no')).strip() for a in self.annotations if a.get('ref_no')}
+            self.current_sr_no = self.getnextsr()
+            self.mark_dirty()
+            self.display()
+            if is_multimark_extra:
+                # If we're still in multi-mark mode for this same punch,
+                # keep the on-screen running count in sync with reality.
+                if (self.multimark_active and self.multimark_punch and
+                        str(self.multimark_punch.get('sr_no', '')).strip() ==
+                        str(annotation.get('sr_no', '')).strip()):
+                    self.multimark_count = max(0, self.multimark_count - 1)
+                    self._update_multimark_bar_count()
+                self.flashstat("Highlight removed from punch", bg='#10b981')
+            else:
+                self.flashstat("Last entry removed", bg='#10b981')
+        except PermissionError:
+            self.undo_stack.append(action)
+            messagebox.showerror("Excel Locked", "Close the Excel file and try Undo again.")
+        except Exception as e:
+            self.undo_stack.append(action)
+            messagebox.showerror("Undo Failed", f"Could not undo the entry:\n{e}")
         self.updtoolpane()
 
     # ================================================================
     # NAVIGATION AND ZOOM
     # ================================================================
+
+    def _on_page_entry_focus(self, event=None):
+        self._page_edit_active = True
+        try:
+            self.page_entry.selection_range(0, tk.END)
+        except tk.TclError:
+            pass
+
+    def _widget_is_inside(self, widget, ancestor):
+        """Return True when widget belongs to ancestor's Tk widget tree."""
+        current = widget
+        while current is not None:
+            if current == ancestor:
+                return True
+            current = getattr(current, 'master', None)
+        return False
+
+    def _on_page_entry_focus_out(self, event=None):
+        """Apply the captured page only if focus settles outside the toolbar."""
+        if not getattr(self, '_page_edit_active', False):
+            return
+
+        # Capture immediately, before any canvas/page callback can update page_var.
+        typed_value = self.page_var.get().strip()
+        self.root.after_idle(
+            lambda value=typed_value: self._finish_page_focus_out(value)
+        )
+
+    def _finish_page_focus_out(self, typed_value):
+        """Finish delayed page navigation after Tk assigns the new focus."""
+        if not getattr(self, '_page_edit_active', False):
+            return
+        try:
+            focused = self.root.focus_get()
+        except tk.TclError:
+            focused = None
+
+        # Do not apply while the user moves to another toolbar control.
+        if focused is not None and self._widget_is_inside(focused, self.toolbar):
+            return
+
+        self._page_edit_active = False
+        self._apply_captured_page_value(typed_value)
+
+    def _apply_page_on_outside_click(self, event=None):
+        """Apply the captured page value after a press outside the toolbar.
+
+        The value is captured before the canvas processes the same press. This
+        prevents scroll/page-refresh callbacks from replacing page_var before
+        navigation reads it.
+        """
+        if not getattr(self, '_page_edit_active', False):
+            return
+        if event is not None and self._widget_is_inside(event.widget, self.toolbar):
+            return
+
+        typed_value = self.page_var.get().strip()
+        self._page_edit_active = False
+        self.root.after_idle(
+            lambda value=typed_value: self._apply_captured_page_value(value)
+        )
+
+    def _apply_captured_page_value(self, typed_value):
+        """Validate and navigate using a page value captured before focus changed."""
+        if not self.pdf_document:
+            self._update_page_toolbar()
+            return
+        try:
+            requested = int(str(typed_value).strip())
+        except (TypeError, ValueError):
+            self._update_page_toolbar()
+            return
+
+        requested = max(1, min(len(self.pdf_document), requested))
+        target = requested - 1
+        self.current_page = target
+
+        # Navigate directly in the existing stacked layout when possible. This
+        # avoids an unnecessary complete PDF render just to change pages.
+        if self.page_layout and target < len(self.page_layout):
+            try:
+                region = self.canvas.cget('scrollregion').split()
+                total_height = float(region[3]) if len(region) == 4 else 1.0
+                target_y = self.page_layout[target]['y'] / max(1.0, total_height)
+                self.canvas.yview_moveto(max(0.0, min(1.0, target_y)))
+                self._update_page_toolbar()
+                return
+            except (tk.TclError, ValueError, IndexError):
+                pass
+
+        self.display(preserve_view=False)
+
+    def _update_page_toolbar(self):
+        total = len(self.pdf_document) if self.pdf_document else 0
+        current = self.current_page + 1 if total else 0
+        self._page_entry_updating = True
+        try:
+            if hasattr(self, 'page_var'):
+                self.page_var.set(str(current))
+            if hasattr(self, 'page_total_label'):
+                self.page_total_label.config(text=f"/ {total}")
+        finally:
+            self._page_entry_updating = False
+
+    def goto_page_from_toolbar(self, event=None):
+        """Compatibility entrypoint for programmatic page navigation."""
+        self._page_edit_active = False
+        if self._page_entry_updating:
+            return "break"
+        self._apply_captured_page_value(self.page_var.get())
+        return "break"
 
     def prev(self):
         """
@@ -2708,7 +4323,7 @@ class CircuitInspector:
         """
         if self.pdf_document and self.current_page > 0:
             self.current_page -= 1
-            self.display()
+            self.display(preserve_view=False)
 
     def next(self):
         """
@@ -2719,33 +4334,781 @@ class CircuitInspector:
         if self.pdf_document and self.current_page < len(self.pdf_document) - 1:
             self.current_page += 1
             self.display()
+    def doubleclick(self, event):
+        """Edit an existing text box on double-click; zoom is toolbar-only."""
+        if not self.pdf_document:
+            return "break"
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        hit, _ = self._hit_test_text_box(x, y)
+        if hit is not None:
+            self.selected_annotation = hit
+            self._open_text_editor(hit, select_all=False)
+        return "break"
 
-    def zoomin(self):
+    def show_zoom_slider(self, event=None):
+        if getattr(self, 'zoom_slider_frame', None) is not None:
+            try:
+                self.zoom_slider_frame.lift()
+                return
+            except tk.TclError:
+                self.zoom_slider_frame = None
+
+        # Belt-and-suspenders: if a previous slider instance's cleanup was
+        # ever skipped for any reason, make sure we don't stack a second
+        # root-level release binding on top of it.
+        self._unbind_zoom_root_release()
+
+        MIN_ZOOM = self.ZOOM_MIN
+        MAX_ZOOM = self.ZOOM_MAX
+        overlay_width = 70
+        overlay_height = 260
+
+        if event is not None:
+            pos_x = min(max(event.x_root - self.root.winfo_rootx() - overlay_width // 2, 10),
+                        self.root.winfo_width() - overlay_width - 10)
+            pos_y = min(max(event.y_root - self.root.winfo_rooty() - overlay_height // 2, 10),
+                        self.root.winfo_height() - overlay_height - 10)
+        else:
+            pos_x, pos_y = 40, 40
+
+        frame = tk.Frame(self.root, bg='#1e293b', bd=2, relief=tk.RIDGE)
+        frame.place(x=pos_x, y=pos_y, width=overlay_width, height=overlay_height)
+        self.zoom_slider_frame = frame
+
+        # ---- Close button: bind press, not just command, and stop propagation ----
+        close_btn = tk.Button(
+            frame, text="✕", font=('Segoe UI', 9, 'bold'),
+            bg='#ef4444', fg='white', relief=tk.FLAT, bd=0,
+            width=2, height=1, cursor='hand2',
+            command=self.close_zoom_slider
+        )
+        close_btn.place(x=overlay_width - 26, y=4)
+        # On touch, react on press (not release) so it beats any pending render work
+        close_btn.bind("<ButtonPress-1>", lambda e: (self.close_zoom_slider(), "break"))
+
+        pct_var = tk.StringVar(value=f"{int(self.zoom_level * 100)}%")
+        self._zoom_slider_pct_var = pct_var  # let set_zoom_level() keep this in sync too
+        pct_label = tk.Label(frame, textvariable=pct_var, bg='#1e293b', fg='white',
+                            font=('Segoe UI', 10, 'bold'))
+        pct_label.place(x=6, y=30)
+
+        track_top = 60
+        track_bottom = overlay_height - 20
+        track_height = track_bottom - track_top
+        track_x_center = overlay_width // 2
+
+        track_canvas = tk.Canvas(frame, bg='#1e293b', width=overlay_width,
+                                height=track_height + 20, highlightthickness=0)
+        track_canvas.place(x=0, y=track_top - 10)
+
+        track_canvas.create_line(track_x_center, 10, track_x_center, track_height + 10,
+                                fill='#475569', width=4, capstyle=tk.ROUND)
+
+        def zoom_to_y(zoom_val):
+            ratio = (zoom_val - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
+            return 10 + (1 - ratio) * track_height
+
+        def y_to_zoom(y):
+            ratio = max(0.0, min(1.0, (y - 10) / track_height))
+            return MAX_ZOOM - ratio * (MAX_ZOOM - MIN_ZOOM)
+
+        handle_radius = 9
+        handle_y = zoom_to_y(self.zoom_level)
+        handle = track_canvas.create_oval(
+            track_x_center - handle_radius, handle_y - handle_radius,
+            track_x_center + handle_radius, handle_y + handle_radius,
+            fill='#3b82f6', outline='white', width=2
+        )
+
+        # This slider instance's own generation number. Any callback below
+        # captures it and checks it before touching shared self.* zoom state,
+        # so a stale callback from a closed/replaced slider can never step on
+        # a newer one (or on self.zoom_level after the slider is gone).
+        self._zoom_slider_generation = getattr(self, '_zoom_slider_generation', 0) + 1
+        my_generation = self._zoom_slider_generation
+
+        self._zoom_render_after_id = None
+        self._zoom_is_dragging = False
+
+        # Per-instance drag state, kept in this closure rather than on self,
+        # so two slider instances (old one not fully torn down + a new one)
+        # can never read/clobber each other's pending-event state.
+        drag_state = {'pending_event': None, 'frame_scheduled': False}
+
+        def is_current():
+            return (getattr(self, '_zoom_slider_generation', None) == my_generation
+                    and getattr(self, 'zoom_slider_frame', None) is frame)
+
+        def apply_zoom_preview(new_zoom, do_render, low_res):
+            self.zoom_level = new_zoom
+            pct_var.set(f"{int(new_zoom * 100)}%")
+            self._update_zoom_toolbar_label()
+            if do_render:
+                self._render_current_page_only(low_res=low_res)
+
+        def process_zoom_frame():
+            drag_state['frame_scheduled'] = False
+            if not is_current():
+                return
+            evt = drag_state['pending_event']
+            drag_state['pending_event'] = None
+            if evt is None:
+                return
+
+            y = max(10, min(track_height + 10, evt.y))
+            new_zoom = y_to_zoom(y)
+            new_zoom = round(new_zoom / 0.05) * 0.05
+            if abs(new_zoom - self.zoom_level) < 0.001:
+                return
+
+            track_canvas.coords(
+                handle,
+                track_x_center - handle_radius, y - handle_radius,
+                track_x_center + handle_radius, y + handle_radius
+            )
+            # Live low-res preview of the current page while dragging, so the
+            # PDF visibly tracks the handle instead of only jumping once on
+            # release - that "nothing happens until you let go" gap was the
+            # biggest part of the slider feeling glitchy/unresponsive.
+            apply_zoom_preview(new_zoom, do_render=True, low_res=True)
+
+        def on_handle_drag(evt):
+            if not is_current():
+                return
+            self._zoom_is_dragging = True
+            drag_state['pending_event'] = evt
+            if not drag_state['frame_scheduled']:
+                drag_state['frame_scheduled'] = True
+                # ~30fps cap - touch digitizers fire far more events than
+                # mouse motion, so a lighter cap avoids saturating the event
+                # queue on slower touch hardware.
+                self.root.after(33, process_zoom_frame)
+
+        def on_track_click(evt):
+            on_handle_drag(evt)
+
+        def on_release(evt):
+            # Only render if we were actually dragging the slider, and only
+            # for the slider instance that's still current — a release
+            # anywhere else in the app, or a stale callback from an already-
+            # closed slider, must not trigger a render.
+            if not is_current() or not self._zoom_is_dragging:
+                return
+            self._zoom_is_dragging = False
+
+            if self._zoom_render_after_id is not None:
+                self.root.after_cancel(self._zoom_render_after_id)
+                self._zoom_render_after_id = None
+
+            # Finalize with a FULL document re-render at the new zoom level.
+            # During the drag we only touched the current page (that's what
+            # keeps dragging smooth), but that leaves every other page's
+            # cached image stale at the old zoom/resolution. If the user then
+            # scrolls/navigates without closing the slider, those pages stay
+            # blurry or mismatched against page_layout.
+            self._do_zoom_render(current_page_only=False)
+
+        track_canvas.tag_bind(handle, "<B1-Motion>", on_handle_drag)
+        track_canvas.bind("<Button-1>", on_track_click)
+        track_canvas.bind("<B1-Motion>", on_handle_drag)
+        # Bind release on the track canvas itself, not root, so releases
+        # elsewhere in the app (like the close button) don't trigger renders.
+        track_canvas.bind("<ButtonRelease-1>", on_release)
+        # Still catch drags that end outside the small canvas (e.g. finger/
+        # mouse leaves the overlay while dragging). Keep the returned funcid
+        # so close_zoom_slider() can remove exactly this binding - previously
+        # this funcid was discarded, so every time the slider was reopened a
+        # new permanent root-level handler stacked up and was never cleaned
+        # up, which is the main source of the glitchy/stuck behavior.
+        self._zoom_root_release_funcid = self.root.bind(
+            "<ButtonRelease-1>", on_release, add="+"
+        )
+
+    def _unbind_zoom_root_release(self):
+        """Remove exactly this slider's root-level <ButtonRelease-1> binding,
+        if one is currently registered. Safe to call even if none is set."""
+        funcid = getattr(self, '_zoom_root_release_funcid', None)
+        if funcid:
+            try:
+                self.root.unbind("<ButtonRelease-1>", funcid)
+            except Exception:
+                pass
+            self._zoom_root_release_funcid = None
+
+    def _do_zoom_render(self, current_page_only=False, low_res=False):
         """
-        Increase zoom level for detail inspection.
-        FUNCTIONAL USE: Multiplies zoom_level by 1.2 for magnified PDF view.
-        Bound to zoom button and Ctrl++ shortcut for detailed quality inspection.
+        Perform the actual PDF re-render at the current zoom_level.
+        FUNCTIONAL USE: Called in a debounced fashion during slider drag. When
+        current_page_only is True, only the currently visible page is
+        re-rasterized instead of the whole document. When low_res is True,
+        the page is rendered at a reduced scale for a fast preview during
+        active dragging (touch generates far more drag events than mouse,
+        so full-resolution re-rasterization on every tick is what jams the app).
         """
-        if self.zoom_level < 3.0:
-            self.zoom_level += 0.25
+        self._zoom_render_after_id = None
+        if current_page_only:
+            self._render_current_page_only(low_res=low_res)
+        else:
             self.display()
 
-    def zoomout(self):
+    def _render_current_page_only(self, low_res=False):
         """
-        Decrease zoom level for broader view.
-        FUNCTIONAL USE: Divides zoom_level by 1.2 for zoomed-out PDF view.
-        Bound to zoom button and Ctrl+- shortcut for comprehensive page view.
-        """
-        if self.zoom_level > 0.5:
-            self.zoom_level -= 0.25
-            self.display()
+        Cheap partial re-render used while actively dragging the zoom slider:
+        re-rasterizes only self.current_page at the new zoom level and redraws
+        just that page's image on canvas, leaving other pages' cached images
+        untouched until a full display() call happens on release/close.
+        FUNCTIONAL USE: Avoids re-rendering all N pages of a multi-page PDF on
+        every zoom-slider tick. When low_res is True, renders at a fraction of
+        the target scale (fast, blurry preview) — used mid-drag on touch where
+        events fire rapidly. Full-resolution render happens once on release.
 
+        Latency fix: for the low_res live-preview path, a single base pixmap
+        is rasterized once per pinch gesture (at gesture-start zoom) and
+        cached; every subsequent live frame just resizes that cached PIL
+        image with PIL's cheap NEAREST resize instead of calling PyMuPDF's
+        get_pixmap() again. Repeated PDF rasterization was the main per-frame
+        cost that made live pinch feel like it was lagging behind the fingers.
+        """
+        if not self.pdf_document or not self.page_layout:
+            return
+        if self.current_page >= len(self.page_layout):
+            return
+
+        try:
+            layout = self.page_layout[self.current_page]
+            page = self.pdf_document[self.current_page]
+            scale = self.page_to_display_scale()
+
+            if low_res:
+                # Reuse the cached base image for this gesture if we already
+                # captured one for this page; otherwise capture it now. The
+                # base is rasterized at a fixed, modest internal resolution
+                # (independent of the live target zoom) so it stays valid -
+                # and cheap to resize - for the whole gesture even as zoom
+                # keeps changing.
+                if (self._pinch_base_image is None or
+                        self._pinch_base_page != self.current_page):
+                    base_scale = scale * 0.5
+                    mat = fitz.Matrix(base_scale, base_scale)
+                    pix = page.get_pixmap(matrix=mat)
+                    self._pinch_base_image = Image.frombytes(
+                        "RGB", [pix.width, pix.height], pix.samples
+                    )
+                    self._pinch_base_scale = base_scale
+                    self._pinch_base_page = self.current_page
+
+                # Scale the cached base image (cheap, no PDF rasterization)
+                # to match how far the live zoom has moved since capture.
+                ratio = scale / self._pinch_base_scale if self._pinch_base_scale else 1.0
+                base_w, base_h = self._pinch_base_image.size
+                target_w = max(1, int(base_w * ratio))
+                target_h = max(1, int(base_h * ratio))
+                img = self._pinch_base_image.resize((target_w, target_h), Image.Resampling.NEAREST)
+            else:
+                mat = fitz.Matrix(scale, scale)
+                pix = page.get_pixmap(matrix=mat)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            photo = ImageTk.PhotoImage(img)
+
+            if self.current_page < len(self.page_images):
+                self.page_images[self.current_page] = photo
+
+            self.canvas.delete(f"page_{self.current_page}")
+            self.canvas.create_image(
+                layout['x'], layout['y'], anchor=tk.NW, image=photo,
+                tags=(f"page_{self.current_page}",)
+            )
+            self.photo = photo
+        except Exception as e:
+            print(f"[WARN] Partial zoom render failed: {e}")
+
+    # ================================================================
+    # TOOLBAR-DOCKED ZOOM CONTROL + PINCH-TO-ZOOM
+    # ================================================================
+
+    def setup_toolbar_zoom(self, toolbar):
+        """Create a compact highlighter-style zoom button and dropdown popup."""
+        zoom_frame = tk.Frame(toolbar, bg='#1e293b')
+        zoom_frame.pack(side=tk.LEFT, padx=(6, 10))
+        tk.Label(zoom_frame, text="Zoom:", bg='#1e293b', fg='#94a3b8',
+                 font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.zoom_pct_var = tk.StringVar(value=f"{int(round(self.zoom_level * 100))}%")
+        self.zoom_popup = None
+
+        # Editable zoom value. The global Entry focus binding opens the
+        # on-screen keyboard. The value is applied only after a press outside
+        # the toolbar, not on Enter and not merely on FocusOut.
+        self.zoom_value_btn = tk.Entry(
+            zoom_frame, textvariable=self.zoom_pct_var,
+            font=('Segoe UI', 9, 'bold'), bg='#334155', fg='white',
+            insertbackground='white', justify='center', relief=tk.FLAT,
+            borderwidth=0, width=7
+        )
+        self.zoom_value_btn.pack(side=tk.LEFT, ipady=10)
+        self.zoom_value_btn.bind('<FocusIn>', self._on_zoom_entry_focus)
+        self.root.bind_all('<ButtonPress-1>', self._apply_zoom_on_outside_click, add='+')
+
+        # Separate dropdown arrow, matching the highlighter arrow behavior.
+        self.zoom_dropdown_btn = tk.Button(
+            zoom_frame, text="↓", font=('Segoe UI', 8),
+            bg='#1e293b', fg='#94a3b8', activebackground='#334155',
+            activeforeground='white', relief=tk.FLAT, borderwidth=0,
+            width=2, height=1, command=self.toggle_zoom_popup, cursor='hand2'
+        )
+        self.zoom_dropdown_btn.pack(side=tk.LEFT, padx=(3, 0))
+
+        self.root.bind_all("<Control-MouseWheel>", self._on_ctrl_scroll_zoom, add="+")
+        self.root.bind_all("<Control-Button-4>", self._on_ctrl_scroll_zoom, add="+")
+        self.root.bind_all("<Control-Button-5>", self._on_ctrl_scroll_zoom, add="+")
+
+    def _on_zoom_entry_focus(self, event=None):
+        self._zoom_edit_active = True
+        try:
+            self.zoom_value_btn.selection_range(0, tk.END)
+        except tk.TclError:
+            pass
+
+    def _apply_zoom_on_outside_click(self, event=None):
+        """Apply typed zoom only after the user presses outside the toolbar."""
+        if not getattr(self, '_zoom_edit_active', False):
+            return
+        if event is not None and self._widget_is_inside(event.widget, self.toolbar):
+            return
+        self._zoom_edit_active = False
+        try:
+            percent = self._parse_zoom_percent()
+        except ValueError:
+            self._update_zoom_toolbar_label()
+            return
+        self.set_zoom_level(percent / 100.0, immediate=False)
+
+    def toggle_zoom_popup(self):
+        """Open or close the zoom popup beneath the toolbar zoom control."""
+        if self.zoom_popup is not None:
+            try:
+                if self.zoom_popup.winfo_exists():
+                    self.close_zoom_popup()
+                    return
+            except tk.TclError:
+                pass
+            self.zoom_popup = None
+        self.show_zoom_popup()
+
+    def show_zoom_popup(self):
+        """Show a slider-only highlighter-style zoom dropdown popup."""
+        popup = tk.Toplevel(self.root)
+        popup.overrideredirect(True)
+        popup.attributes('-topmost', True)
+        popup.configure(bg='#1e293b', bd=1, relief=tk.SOLID)
+        self.zoom_popup = popup
+
+        x = self.zoom_value_btn.winfo_rootx()
+        y = self.zoom_value_btn.winfo_rooty() + self.zoom_value_btn.winfo_height() + 2
+        popup.geometry(f"270x82+{x}+{y}")
+
+        tk.Label(
+            popup, text="Drag to adjust zoom", bg='#1e293b', fg='#cbd5e1',
+            font=('Segoe UI', 9)
+        ).pack(anchor='w', padx=12, pady=(10, 2))
+
+        self.zoom_scale = tk.Scale(
+            popup, from_=50, to=300, orient=tk.HORIZONTAL, resolution=1,
+            showvalue=False, length=242, sliderlength=18, bd=0,
+            highlightthickness=0, bg='#1e293b', fg='white',
+            troughcolor='#475569', activebackground='#60a5fa',
+            command=self._on_zoom_bar
+        )
+        self._zoom_dropdown_updating = True
+        try:
+            self.zoom_scale.set(int(round(self.zoom_level * 100)))
+        finally:
+            self._zoom_dropdown_updating = False
+        self.zoom_scale.pack(padx=10, pady=(2, 8))
+        self.zoom_scale.bind('<ButtonRelease-1>', self._finish_zoom_bar)
+
+        popup.bind('<Escape>', lambda e: self.close_zoom_popup())
+        popup.bind('<FocusOut>', self._zoom_popup_focus_out)
+        self.zoom_scale.focus_set()
+
+    def _zoom_popup_focus_out(self, event=None):
+        """Close only when focus moves completely outside the zoom popup."""
+        popup = self.zoom_popup
+        if popup is None:
+            return
+        self.root.after(100, lambda expected=popup: self._close_zoom_popup_if_unfocused(expected))
+
+    def _close_zoom_popup_if_unfocused(self, expected):
+        """Apply typed zoom automatically when the user clicks outside the popup."""
+        if self.zoom_popup is not expected:
+            return
+        try:
+            focused = self.root.focus_get()
+            if focused is None or not str(focused).startswith(str(expected)):
+                self.close_zoom_popup()
+        except tk.TclError:
+            self.zoom_popup = None
+
+    def close_zoom_popup(self):
+        popup = self.zoom_popup
+        self.zoom_popup = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+
+    def _parse_zoom_percent(self):
+        raw = self.zoom_pct_var.get().strip().replace('%', '')
+        value = float(raw)
+        return max(50.0, min(300.0, value))
+
+    def _apply_zoom_popup_entry(self, event=None, close_popup=True):
+        """Apply typed zoom on Enter or whenever focus leaves the popup."""
+        try:
+            percent = self._parse_zoom_percent()
+        except ValueError:
+            self._update_zoom_toolbar_label()
+            if close_popup:
+                self.close_zoom_popup()
+            return "break"
+        self.set_zoom_level(percent / 100.0, immediate=False)
+        if close_popup:
+            self.close_zoom_popup()
+        return "break"
+
+    def _on_zoom_entry(self, event=None):
+        return self._apply_zoom_popup_entry(event)
+
+    def _on_zoom_dropdown(self, event=None):
+        return self._apply_zoom_popup_entry(event)
+
+    def _on_zoom_bar(self, value):
+        if self._zoom_dropdown_updating:
+            return
+        percent = int(round(float(value)))
+        self.zoom_pct_var.set(f"{percent}%")
+
+    def _finish_zoom_bar(self, event=None):
+        if not hasattr(self, 'zoom_scale'):
+            return "break"
+        value = float(self.zoom_scale.get()) / 100.0
+        self.set_zoom_level(value, immediate=False)
+        self.close_zoom_popup()
+        return "break"
+
+    def setup_canvas_pinch_zoom(self):
+        """Bind Tk-managed pinch events without installing a native WNDPROC.
+
+        Tk dispatches this callback on its own UI thread, avoiding the Python
+        3.14 GIL crash caused by calling Python from a Windows window-procedure
+        callback. Unsupported Tk builds simply ignore the virtual event.
+        """
+        if getattr(self, '_safe_pinch_bound', False):
+            return
+        try:
+            self.canvas.bind('<<TouchpadPinch>>', self._on_pinch_zoom, add='+')
+            # Most Windows Tk touch drivers promote the final finger-up to a
+            # ButtonRelease event. Bind with add='+' so normal drawing/panning
+            # release handlers remain intact.
+            self.canvas.bind('<ButtonRelease-1>', self._on_safe_pinch_release, add='+')
+            self._safe_pinch_bound = True
+        except tk.TclError as exc:
+            self._safe_pinch_bound = False
+            print(f'[WARN] Tk pinch event unavailable: {exc}')
+
+    def _on_pinch_zoom(self, event):
+        """Track Tk pinch magnitude proportionally with immediate visual feedback.
+
+        Latency fix: the zoom-level math still runs on every event (cheap),
+        but the actual canvas redraw is throttled to a ~60fps budget and
+        deferred via after_idle instead of calling update_idletasks()
+        synchronously on every single touch event. Forcing a full Tk flush
+        per-event was the main source of pinch lag on fast digitizers.
+        """
+        if (not self.pdf_document or self.active_highlighter or
+                self.tool_mode is not None or self.drawing):
+            return 'break'
+        try:
+            now = time.monotonic()
+            raw = float(getattr(event, 'delta', 0.0))
+            if raw == 0.0:
+                return 'break'
+
+            # A pause means a new physical pinch gesture. Reset only the raw
+            # sample history, not the current zoom level.
+            if now - self._safe_pinch_last_time > 0.25:
+                self._safe_pinch_last_raw = None
+                self._safe_pinch_accumulator = 1.0
+                self._pinch_base_image = None  # force a fresh base capture
+            self._safe_pinch_last_time = now
+
+            # Tk builds expose pinch values differently. If consecutive values
+            # look cumulative, use their ratio/difference. Otherwise treat the
+            # value as an incremental gesture delta. Exponential scaling makes
+            # equal finger movement produce equal proportional zoom movement.
+            previous = self._safe_pinch_last_raw
+            self._safe_pinch_last_raw = raw
+            if previous is not None and raw > 0 and previous > 0:
+                ratio = raw / previous
+                if 0.70 <= ratio <= 1.40 and abs(ratio - 1.0) > 0.0005:
+                    factor = ratio
+                else:
+                    factor = pow(1.0018, raw)
+            else:
+                if abs(raw) >= 10.0:
+                    factor = pow(1.0018, raw)
+                elif abs(raw) > 1.0:
+                    factor = pow(1.018, raw)
+                else:
+                    factor = pow(2.0, raw)
+
+            # Reject only impossible driver spikes, while retaining the actual
+            # pinch amount for normal events.
+            factor = max(0.70, min(1.40, factor))
+            target = max(
+                self.ZOOM_MIN,
+                min(self.ZOOM_MAX, self.zoom_level * factor)
+            )
+            if abs(target - self.zoom_level) < 0.0005:
+                return 'break'
+
+            self.zoom_level = target
+            self._native_pinch_last_zoom = target
+            self._safe_pinch_active = True
+            self._update_zoom_toolbar_label()
+            self._panning = False
+
+            # Throttle the actual redraw to a real frame budget instead of
+            # painting on every raw event - the digitizer can fire well past
+            # 100Hz, but repainting that often buys nothing visually and is
+            # exactly what caused the lag. Only schedule a frame if one isn't
+            # already pending, and skip if we're still inside this frame's
+            # minimum interval.
+            if not self._pinch_frame_pending:
+                elapsed = now - self._pinch_last_frame_time
+                delay_ms = 0 if elapsed >= self._pinch_frame_min_interval else \
+                    int((self._pinch_frame_min_interval - elapsed) * 1000)
+                self._pinch_frame_pending = True
+                self.root.after(delay_ms, self._render_pinch_frame)
+
+            # Final quality is normally applied by _on_safe_pinch_release.
+            # This long timer is only a driver fallback when no release event
+            # is exposed by Tk; it is deliberately not the normal finish path.
+            if self._native_pinch_render_after_id is not None:
+                try:
+                    self.root.after_cancel(self._native_pinch_render_after_id)
+                except Exception:
+                    pass
+            self._native_pinch_render_after_id = self.root.after(
+                self._safe_pinch_watchdog_ms,
+                self._finish_safe_pinch_render
+            )
+        except Exception as exc:
+            print(f'[WARN] Tk pinch event failed: {exc}')
+        return 'break'
+
+    def _render_pinch_frame(self):
+        """Paint exactly one throttled live-preview frame during an active pinch."""
+        self._pinch_frame_pending = False
+        if not self._safe_pinch_active:
+            return
+        self._pinch_last_frame_time = time.monotonic()
+        self._render_current_page_only(low_res=True)
+
+    def _on_safe_pinch_release(self, event=None):
+        """Finalize full-quality zoom when the fingers are released."""
+        if not self._safe_pinch_active:
+            return
+        self._finish_safe_pinch_render()
+        return 'break'
+
+    def _finish_safe_pinch_render(self):
+        """Finalize one active pinch with a single full-quality render."""
+        pending_id = self._native_pinch_render_after_id
+        self._native_pinch_render_after_id = None
+        if pending_id is not None:
+            try:
+                self.root.after_cancel(pending_id)
+            except Exception:
+                pass
+
+        if not self._safe_pinch_active:
+            return
+        self._safe_pinch_active = False
+
+        target = self._native_pinch_last_zoom
+        self._native_pinch_last_zoom = None
+        self._safe_pinch_last_raw = None
+        self._safe_pinch_accumulator = 1.0
+        self._pinch_base_image = None  # drop the cached preview source, gesture is over
+        self._pinch_base_scale = None
+        self._pinch_base_page = None
+        if self.pdf_document and target is not None:
+            self.set_zoom_level(target, immediate=True, full_render=True)
+
+    def _update_zoom_toolbar_label(self):
+        """Synchronize the compact toolbar value and any open popup slider."""
+        if not hasattr(self, 'zoom_pct_var'):
+            return
+        percent = int(round(self.zoom_level * 100))
+        self._zoom_dropdown_updating = True
+        try:
+            self.zoom_pct_var.set(f"{percent}%")
+            popup = getattr(self, 'zoom_popup', None)
+            if popup is not None and popup.winfo_exists() and hasattr(self, 'zoom_scale'):
+                self.zoom_scale.set(percent)
+        except tk.TclError:
+            self.zoom_popup = None
+        finally:
+            self._zoom_dropdown_updating = False
+
+    def step_zoom(self, delta):
+        """
+        Nudge zoom by a fixed step (used by the toolbar +/- buttons).
+        FUNCTIONAL USE: Rounds to the nearest step so repeated clicks land on
+        clean values (90%, 100%, 110%...) instead of drifting from float error.
+        Args: delta - signed float, e.g. +0.1 or -0.1
+        """
+        new_zoom = round((self.zoom_level + delta) / self.ZOOM_STEP) * self.ZOOM_STEP
+        self.set_zoom_level(new_zoom, immediate=False)
+
+    def set_zoom_level(self, new_zoom, immediate=False, low_res=False, full_render=False):
+        """Set zoom and coalesce redraws to prevent UI lag and stale page images."""
+        try:
+            new_zoom = float(new_zoom)
+        except (TypeError, ValueError):
+            return
+        new_zoom = max(self.ZOOM_MIN, min(self.ZOOM_MAX, new_zoom))
+        if abs(new_zoom - self.zoom_level) < 0.001 and not full_render:
+            self._update_zoom_toolbar_label()
+            return
+
+        self.zoom_level = new_zoom
+        self._update_zoom_toolbar_label()
+        if not self.pdf_document:
+            return
+
+        if self._zoom_render_after_id is not None:
+            try:
+                self.root.after_cancel(self._zoom_render_after_id)
+            except Exception:
+                pass
+            self._zoom_render_after_id = None
+
+        def render_zoom():
+            self._zoom_render_after_id = None
+            self._clear_page_render_cache()
+            # Let pending toolbar/paint events complete before the expensive
+            # stacked-document redraw. This prevents the window appearing hung.
+            self.root.update_idletasks()
+            self.display(preserve_view=True)
+
+        if immediate:
+            render_zoom()
+        else:
+            # Multiple wheel/dropdown events collapse into one full render.
+            self._zoom_render_after_id = self.root.after(35, render_zoom)
+
+    def _on_ctrl_scroll_zoom(self, event):
+        """
+        Handle Ctrl+MouseWheel / Ctrl+Button-4/5 as a zoom gesture.
+        FUNCTIONAL USE: Standard "Ctrl+scroll to zoom" convention (matches
+        browsers, PDF viewers, etc.) as a fast, precise, mouse-friendly
+        alternative to the toolbar buttons or floating slider.
+        """
+        if not self.pdf_document or not self._is_pointer_over_canvas():
+            return
+
+        delta = 0
+        if getattr(event, 'num', None) == 4:
+            delta = 1
+        elif getattr(event, 'num', None) == 5:
+            delta = -1
+        elif getattr(event, 'delta', 0):
+            delta = 1 if event.delta > 0 else -1
+
+        if delta == 0:
+            return "break"
+
+        self.step_zoom(delta * self.ZOOM_STEP)
+        return "break"
+
+    # ---- Touch pinch-to-zoom (best effort; gracefully degrades) ----
+
+    def close_zoom_slider(self):
+        """
+        Remove the floating zoom-level adjuster overlay from the screen.
+        FUNCTIONAL USE: Bound to the slider's cross (X) button (on ButtonPress-1
+        for immediate touch response). Cancels any pending debounced render,
+        clears the drag-tracking flag, removes ONLY this slider instance's
+        root-level release binding (by exact funcid, never a blind unbind),
+        and performs one final full-quality re-render of the whole document.
+        """
+        if getattr(self, '_zoom_render_after_id', None) is not None:
+            try:
+                self.root.after_cancel(self._zoom_render_after_id)
+            except Exception:
+                pass
+            self._zoom_render_after_id = None
+
+        self._zoom_is_dragging = False
+
+        # Bump the generation so any already-queued/stale callback from this
+        # instance (e.g. a process_zoom_frame() still pending via after())
+        # becomes a no-op even if it still fires once more.
+        self._zoom_slider_generation = getattr(self, '_zoom_slider_generation', 0) + 1
+
+        self._unbind_zoom_root_release()
+
+        frame = getattr(self, 'zoom_slider_frame', None)
+        if frame is not None:
+            try:
+                frame.destroy()
+            except tk.TclError:
+                pass
+            self.zoom_slider_frame = None
+
+        self._zoom_slider_pct_var = None
+        self._update_zoom_toolbar_label()
+        self.display()
     # ================================================================
     # PLACEHOLDER METHODS - Implement from your original code
     # ================================================================
 
+    def derive_storage_location_from_input(self, input_path):
+        """Derive the sibling 07-Scanned System Book UNC folder."""
+        if not input_path:
+            return get_base_path()
+
+        # Use ntpath deliberately. It parses Windows drive and UNC paths
+        # correctly even when this source file is inspected or packaged elsewhere.
+        normalized_input = ntpath.normpath(str(input_path).strip())
+        current_dir = ntpath.dirname(normalized_input)
+
+        while current_dir:
+            folder_name = ntpath.basename(current_dir).strip().casefold()
+            if folder_name == "02-customer inputs":
+                project_root = ntpath.dirname(current_dir)
+                return ntpath.normpath(
+                    ntpath.join(project_root, "07-Scanned System Book")
+                )
+
+            parent_dir = ntpath.dirname(current_dir)
+            if not parent_dir or parent_dir == current_dir:
+                break
+            current_dir = parent_dir
+
+        # Keep the old storage default when the selected PDF is not under the
+        # expected 02-Customer Inputs folder.
+        return get_base_path()
+
+
     def loadpdf(self):
         """Load PDF and persist it under central UNC storage."""
+        self.stopmultimark()  # never leave multi-mark mode active across a document swap
         initial_pdf_dir = get_base_path()
         if not os.path.isdir(initial_pdf_dir):
             initial_pdf_dir = app_base()
@@ -2756,30 +5119,48 @@ class CircuitInspector:
             initialdir=initial_pdf_dir
         )
         if file_path:
+            load_stage = "validating selected PDF"
             try:
-                # Temporarily hold source path before project details are collected.
-                self.current_pdf_path = file_path
-                self.askprojdetails()
+                if not os.path.isfile(file_path):
+                    raise FileNotFoundError(f"Selected PDF was not found: {file_path}")
 
+                # Keep the drawing-input dialog at the existing configured base path.
+                # Only the storage location is derived from the selected input path.
+                self.current_pdf_path = file_path
+                self.storage_location = self.derive_storage_location_from_input(file_path)
+
+                load_stage = "reading project details"
+                self.askprojdetails()  # user-facing dialog - keep overlay hidden until now
+
+                self.busy("Setting up project folders...")
+                load_stage = f"creating storage folders under: {self.storage_location}"
                 if not self.preparefolders():
                     return
 
+                self.busy(f"Copying PDF to storage...")
+                load_stage = f"copying PDF from: {file_path}"
                 central_pdf_path = self.copy_pdf_to_central_storage(file_path)
+
+                self.busy("Opening PDF...")
+                load_stage = f"opening copied PDF: {central_pdf_path}"
 
                 if self.pdf_document:
                     self.pdf_document.close()
 
                 self.pdf_document = fitz.open(central_pdf_path)
+                self._clear_page_render_cache()
                 self.current_pdf_path = central_pdf_path
                 self.current_page = 0
                 self.annotations = []
                 self.zoom_level = 1.0
+                self._update_zoom_toolbar_label()
                 self.tool_mode = None
                 self.active_highlighter = None
                 self.colorbutton()
                 self.root.config(cursor="")
                 self.current_sr_no = self.getnextsr()
-                self.display()
+                self.display(preserve_view=False)  # display() shows its own overlay if the render is heavy
+                self.unbusy()
                 messagebox.showinfo("Success", f"Loaded PDF with {len(self.pdf_document)} pages")
 
                 try:
@@ -2794,17 +5175,22 @@ class CircuitInspector:
                             f"Existing working Excel found. Resume previous inspection?"
                         )
                         if not resume:
+                            self.busy("Preparing working Excel file...")
                             shutil.copy2(self.master_excel_file, self.working_excel_path)
                     else:
+                        self.busy("Preparing working Excel file...")
                         shutil.copy2(self.master_excel_file, self.working_excel_path)
 
                     self.excel_file = self.working_excel_path
 
                 except Exception as e:
+                    self.unbusy()
                     messagebox.showerror("Excel Error", f"Failed to prepare working Excel:\n{e}")
                     return
 
+                self.busy("Syncing punch list...")
                 self.write_to_xcl()
+                self.unbusy()
 
                 expected_session_path = os.path.join(
                     self.project_dirs["sessions"],
@@ -2825,12 +5211,21 @@ class CircuitInspector:
                         "Existing session found. Do you want to resume it?"
                     )
                     if resume:
-                        self.loadfrompath(expected_session_path)
+                        self.busy("Loading saved session...")
+                        try:
+                            self.loadfrompath(expected_session_path)
+                        finally:
+                            self.unbusy()
                 
                 self.saverecentproj()
 
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to load PDF: {str(e)}")
+                messagebox.showerror(
+                    "Error",
+                    f"Failed to load PDF while {load_stage}:\n\n{e}"
+                )
+            finally:
+                self.unbusy()
 
     def loadcat(self):
         """Load categories from PostgreSQL."""
@@ -2945,8 +5340,25 @@ class CircuitInspector:
         # Project Name
         tk.Label(dlg, text="Project Name", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(10, 0))
         
-        project_var = tk.StringVar(value=getattr(self, 'project_name', ''))
-        tk.Entry(dlg, textvariable=project_var, font=('Segoe UI', 10)).pack(fill="x", padx=20)
+        project_options = self.project_name_options_from_drawing(
+            getattr(self, 'current_pdf_path', '')
+        )
+        detected_project = self.infer_project_from_drawing(
+            getattr(self, 'current_pdf_path', '')
+        )
+        # Prefer an actual folder from 07-Scanned System Book. With multiple
+        # folders, leave the editable dropdown unselected so the user chooses.
+        initial_project = project_options[0] if len(project_options) == 1 else ''
+        if not project_options and detected_project:
+            initial_project = detected_project
+        project_var = tk.StringVar(value=initial_project)
+        project_entry = ttk.Combobox(
+            dlg, textvariable=project_var, values=project_options,
+            state='normal', font=('Segoe UI', 10)
+        )
+        project_entry.pack(fill="x", padx=20)
+        if len(project_options) > 1:
+            project_entry.set('')
 
         # Sales Order Number
         tk.Label(dlg, text="Sales Order Number", font=('Segoe UI', 10, 'bold')).pack(anchor="w", padx=20, pady=(10, 0))
@@ -2959,7 +5371,13 @@ class CircuitInspector:
         location_frame = tk.Frame(dlg)
         location_frame.pack(fill="x", padx=20, pady=5)
 
-        location_var = tk.StringVar(value=get_base_path())
+        scanned_system_book = self.scanned_system_book_path_from_drawing(
+            getattr(self, 'current_pdf_path', '')
+        )
+        default_storage_location = scanned_system_book or getattr(
+            self, "storage_location", get_base_path()
+        ) or get_base_path()
+        location_var = tk.StringVar(value=default_storage_location)
         location_entry = tk.Entry(location_frame, textvariable=location_var, font=('Segoe UI', 9), state='readonly')
         location_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
 
@@ -2997,19 +5415,29 @@ class CircuitInspector:
         # Auto-load location when project name changes
         def on_project_name_change(*args):
             project_name = project_var.get().strip()
-            if project_name:
-                # Check database for existing project location
-                existing_location = self.db.get_project_location(project_name)
-                if existing_location:
-                    location_var.set(existing_location)
-                    # Show visual feedback
-                    location_entry.config(bg='#dcfce7')  # Light green
-                    dlg.after(1000, lambda: location_entry.config(bg='white'))
-                else:
-                    location_var.set(get_base_path())
+            if not scanned_system_book:
+                # Outside the expected input tree, preserve the original DB lookup.
+                if project_name:
+                    existing_location = self.db.get_project_location(project_name)
+                    if existing_location:
+                        location_var.set(existing_location)
+                return
+            existing_names = {name.casefold() for name in project_options}
+            is_recurring = bool(project_name) and (
+                project_name.casefold() in existing_names or
+                bool(self.db.get_project_location(project_name))
+            )
+            if is_recurring:
+                location_var.set(ntpath.join(scanned_system_book, project_name))
+                location_entry.config(bg='#dcfce7')
+                dlg.after(1000, lambda: location_entry.config(bg='white'))
+            else:
+                # A genuinely new project starts at 07-Scanned System Book.
+                location_var.set(scanned_system_book)
         
         # Tcl 9 compatibility: trace() is deprecated; use trace_add().
         project_var.trace_add('write', on_project_name_change)
+        on_project_name_change()
 
         def on_ok():
             cabinet = cabinet_var.get().strip()
@@ -3127,10 +5555,15 @@ class CircuitInspector:
             return False
         
         # Create structure: storage_location/project_name/cabinet_id/
-        project_folder = os.path.join(
-            self.storage_location,
-            self.project_name.replace(' ', '_')
-        )
+        project_folder_name = self.project_name.replace(' ', '_')
+        storage_leaf = os.path.basename(os.path.normpath(self.storage_location))
+        if storage_leaf.casefold() in {
+            self.project_name.casefold(), project_folder_name.casefold()
+        }:
+            # Recurring projects already point at 07-Scanned System Book/<project>.
+            project_folder = self.storage_location
+        else:
+            project_folder = os.path.join(self.storage_location, project_folder_name)
         
         cabinet_root = os.path.join(
             project_folder,
@@ -3202,6 +5635,206 @@ class CircuitInspector:
     # ================================================================
     # UPDATED: gather_checklist_matches - Updated for new column structure
     # ================================================================
+    def allexistingpunches(self):
+        """Return every existing Punch Sheet row, including implemented and closed punches."""
+        punches = []
+        if not self.excel_file or not os.path.exists(self.excel_file):
+            return punches
+        try:
+            wb = load_workbook(self.excel_file, data_only=True)
+            ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
+            row = 9  # Row 8 contains the Punch Sheet column titles.
+            while row <= ws.max_row + 5:
+                sr_no = self.readcell(ws, row, self.punch_cols['sr_no'])
+                description = self.readcell(ws, row, self.punch_cols['desc'])
+                if sr_no is None and description is None:
+                    break
+                # Ignore accidental repeated header rows inside the data area.
+                sr_text = str(sr_no or '').strip().casefold()
+                desc_text = str(description or '').strip().casefold()
+                if sr_text in {'sr no', 'sr no.', 'sr. no.', 'serial no', 'serial number'} or \
+                        desc_text in {'punch description', 'description'}:
+                    row += 1
+                    continue
+                if sr_no is not None:
+                    punches.append({
+                        'row': row,
+                        'sr_no': sr_no,
+                        'ref_no': self.readcell(ws, row, self.punch_cols['ref_no']),
+                        'punch_text': description or '',
+                        'category': self.readcell(ws, row, self.punch_cols['category']) or '',
+                        'implemented_name': self.readcell(ws, row, self.punch_cols['implemented_name']),
+                        'closed_name': self.readcell(ws, row, self.punch_cols['closed_name'])
+                    })
+                row += 1
+            wb.close()
+        except Exception as e:
+            messagebox.showerror("Punch Read Error", f"Failed to read existing punches:\n{e}")
+        return punches
+
+    def editexistingpunch(self):
+        """Edit an existing punch or add a new punch without a highlight."""
+        if not self.excel_file or not os.path.exists(self.excel_file):
+            messagebox.showwarning("No Excel", "Load a project with a working Excel file first.")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Edit or Add Punch")
+        dlg.geometry("1050x680")
+        dlg.minsize(850, 560)
+        dlg.configure(bg='#f8fafc')
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        header = tk.Frame(dlg, bg='#1e293b', height=58)
+        header.pack(fill=tk.X); header.pack_propagate(False)
+        title_var = tk.StringVar(value="Edit Existing Punch")
+        tk.Label(header, textvariable=title_var, bg='#1e293b', fg='white',
+                 font=('Segoe UI', 14, 'bold')).pack(pady=14)
+
+        list_frame = tk.Frame(dlg, bg='white')
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(16, 8))
+        columns = ('sr', 'ref', 'description', 'category', 'status')
+        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=12)
+        for col, text in zip(columns, ('SR No.', 'Reference', 'Punch Description', 'Category', 'Status')):
+            tree.heading(col, text=text)
+        tree.column('sr', width=70, anchor='center', stretch=False)
+        tree.column('ref', width=100, anchor='center', stretch=False)
+        tree.column('description', width=470)
+        tree.column('category', width=180)
+        tree.column('status', width=110, anchor='center', stretch=False)
+        scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y); tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        form = tk.LabelFrame(dlg, text="Punch details", bg='#f8fafc', fg='#1e293b',
+                             font=('Segoe UI', 10, 'bold'), padx=12, pady=10)
+        form.pack(fill=tk.X, padx=18, pady=8)
+        ref_var, category_var = tk.StringVar(), tk.StringVar()
+        selected = {'punch': None, 'adding': False}
+        tk.Label(form, text="Reference No.", bg='#f8fafc').grid(row=0, column=0, sticky='w')
+        ref_entry = tk.Entry(form, textvariable=ref_var, font=('Segoe UI', 10), width=22)
+        ref_entry.grid(row=1, column=0, sticky='ew', padx=(0, 12), pady=(2, 8))
+        tk.Label(form, text="Category", bg='#f8fafc').grid(row=0, column=1, sticky='w')
+        tk.Entry(form, textvariable=category_var, font=('Segoe UI', 10)).grid(
+            row=1, column=1, sticky='ew', pady=(2, 8))
+        tk.Label(form, text="Punch Description", bg='#f8fafc').grid(
+            row=2, column=0, columnspan=2, sticky='w')
+        desc_text = tk.Text(form, height=5, wrap=tk.WORD, font=('Segoe UI', 10))
+        desc_text.grid(row=3, column=0, columnspan=2, sticky='ew', pady=(2, 0))
+        form.columnconfigure(1, weight=1)
+        punch_by_item = {}
+
+        def populate(select_sr=None):
+            tree.delete(*tree.get_children()); punch_by_item.clear()
+            for punch in self.allexistingpunches():
+                status = 'Closed' if punch['closed_name'] else (
+                    'Implemented' if punch['implemented_name'] else 'Open')
+                item = tree.insert('', tk.END, values=(punch['sr_no'], punch['ref_no'] or '',
+                    punch['punch_text'], punch['category'], status))
+                punch_by_item[item] = punch
+                if select_sr is not None and str(punch['sr_no']) == str(select_sr):
+                    tree.selection_set(item); tree.focus(item)
+
+        def load_selection(event=None):
+            items = tree.selection()
+            if not items: return
+            punch = punch_by_item.get(items[0])
+            if not punch: return
+            selected.update(punch=punch, adding=False); title_var.set("Edit Existing Punch")
+            ref_var.set('' if punch['ref_no'] is None else str(punch['ref_no']))
+            category_var.set(str(punch['category'] or ''))
+            desc_text.delete('1.0', tk.END); desc_text.insert('1.0', str(punch['punch_text'] or ''))
+
+        def begin_add():
+            selected.update(punch=None, adding=True); title_var.set("Add New Punch")
+            tree.selection_remove(tree.selection()); ref_var.set(''); category_var.set('')
+            desc_text.delete('1.0', tk.END); ref_entry.focus_force()
+
+        def save_changes():
+            ref_no = ref_var.get().strip()
+            description = desc_text.get('1.0', 'end-1c').strip()
+            category = category_var.get().strip()
+            if not ref_no or not description or not category:
+                messagebox.showwarning("Missing Information",
+                    "Reference number, punch description, and category are required.", parent=dlg)
+                return
+            punch = selected['punch']
+            try:
+                wb = load_workbook(self.excel_file)
+                ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
+                if selected['adding'] or punch is None:
+                    row = 9  # Preserve row 8 table titles.
+                    while self.readcell(ws, row, self.punch_cols['sr_no']) is not None: row += 1
+                    previous = self.readcell(ws, row - 1, self.punch_cols['sr_no']) if row > 9 else None
+                    try: sr_no = int(previous) + 1 if previous is not None else 1
+                    except (TypeError, ValueError): sr_no = self.getnextsr()
+                    self.writecell(ws, row, self.punch_cols['sr_no'], sr_no)
+                    self.writecell(ws, row, self.punch_cols['ref_no'], ref_no)
+                    self.writecell(ws, row, self.punch_cols['desc'], description)
+                    self.writecell(ws, row, self.punch_cols['category'], category)
+                    self.writecell(ws, row, self.punch_cols['checked_name'],
+                                   self.logged_in_fullname or "Unknown User")
+                    self.writecell(ws, row, self.punch_cols['checked_date'],
+                                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    action, target_sr = 'Added', sr_no
+                else:
+                    row, target_sr = punch['row'], punch['sr_no']
+                    self.writecell(ws, row, self.punch_cols['ref_no'], ref_no)
+                    self.writecell(ws, row, self.punch_cols['desc'], description)
+                    self.writecell(ws, row, self.punch_cols['category'], category)
+                    action = 'Updated'
+                wb.save(self.excel_file); wb.close()
+            except PermissionError:
+                messagebox.showerror("Excel Locked", "Close the Excel file and try again.", parent=dlg); return
+            except Exception as exc:
+                messagebox.showerror("Punch Save Failed", f"Could not save the punch:\n{exc}", parent=dlg); return
+
+            if punch is not None and not selected['adding']:
+                ann = next((a for a in self.annotations if a.get('excel_row') == row or
+                            str(a.get('sr_no', '')).strip() == str(target_sr)), None)
+                if ann:
+                    ann.update(ref_no=ref_no, punch_text=description, component=category,
+                               category=category, last_edited_by=self.logged_in_fullname or "Unknown User",
+                               last_edited_date=datetime.now().isoformat())
+            self.session_refs.add(ref_no)
+            self.updatestatsforref(ref_no, status='NOK')
+            self.current_sr_no = self.getnextsr(); self.mark_dirty()
+            populate(select_sr=target_sr)
+            selected.update(punch=None, adding=False); title_var.set("Edit Existing Punch")
+            self.flashstat(f"{action} punch SR {target_sr}", bg='#10b981')
+
+        def begin_multimark():
+            punch = selected['punch']
+            if selected['adding'] or punch is None:
+                messagebox.showwarning(
+                    "Select a Punch",
+                    "Select an existing punch from the list first, then click "
+                    "\"Mark Multiple Highlights\".",
+                    parent=dlg
+                )
+                return
+            dlg.grab_release()
+            dlg.destroy()
+            self.root.update_idletasks()
+            self.root.after(50, lambda: self.startmultimark(punch))
+
+        tree.bind('<<TreeviewSelect>>', load_selection)
+        buttons = tk.Frame(dlg, bg='#f8fafc'); buttons.pack(fill=tk.X, padx=18, pady=(4, 16))
+        tk.Button(buttons, text="+ Add New Punch", command=begin_add, bg='#ec4899', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=22, pady=10).pack(side=tk.LEFT)
+        tk.Button(buttons, text="Mark Multiple Highlights", command=begin_multimark,
+                  bg='#7c3aed', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=22, pady=10).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(buttons, text="Save", command=save_changes, bg='#10b981', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=24, pady=10).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(buttons, text="Close", command=dlg.destroy, bg='#64748b', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=24, pady=10).pack(side=tk.RIGHT)
+        populate()
+        first = tree.get_children()
+        if first: tree.selection_set(first[0]); tree.focus(first[0]); load_selection()
+        else: begin_add()
+
     def openpuches(self):
         """Reads punch sheet and returns list of open punches with all details."""
         punches = []
@@ -3213,11 +5846,27 @@ class CircuitInspector:
             wb = load_workbook(self.excel_file, data_only=True)
             ws = wb[self.punch_sheet_name] if self.punch_sheet_name in wb.sheetnames else wb.active
 
-            row = 8
-            while True:
+            row = 9  # Row 8 contains table headings.
+            empty_rows = 0
+            while row <= ws.max_row + 5:
                 sr = self.readcell(ws, row, self.punch_cols['sr_no'])
+                description = self.readcell(ws, row, self.punch_cols['desc'])
+                if sr is None and description is None:
+                    empty_rows += 1
+                    if empty_rows >= 3:
+                        break
+                    row += 1
+                    continue
+                empty_rows = 0
+                sr_text = str(sr or '').strip().casefold()
+                desc_text = str(description or '').strip().casefold()
+                if sr_text in {'sr no', 'sr no.', 'sr. no.', 'serial no', 'serial number'} or \
+                        desc_text in {'punch description', 'description'}:
+                    row += 1
+                    continue
                 if sr is None:
-                    break
+                    row += 1
+                    continue
 
                 # Check if punch is closed
                 closed = self.readcell(ws, row, self.punch_cols['closed_name'])
@@ -3232,7 +5881,7 @@ class CircuitInspector:
                     'sr_no': sr,
                     'row': row,
                     'ref_no': self.readcell(ws, row, self.punch_cols['ref_no']),
-                    'punch_text': self.readcell(ws, row, self.punch_cols['desc']),
+                    'punch_text': description or '',
                     'category': self.readcell(ws, row, self.punch_cols['category']),
                     'implemented': implemented,
                     'implemented_name': self.readcell(ws, row, self.punch_cols['implemented_name']),
@@ -3258,7 +5907,12 @@ class CircuitInspector:
     # ================================================================
 
     def reviewbeforesave(self, checklist_path, refs_set):
-        """Modern dialog for reviewing and marking checklist items with name and date"""
+        """Interphase Checklist Review, in the same list-workspace format as
+        the punch verification screen (punchclosing): a sidebar listing every
+        pending item (click any row to jump straight to it), a detail panel
+        with an editable remark box, and action buttons in the footer.
+        Core logic (matching, mandatory N/A remark, cell writes, save-on-exit)
+        is unchanged from the previous card-style dialog."""
         try:
             cols, matches = self.checklistmatches(checklist_path, refs_set)
         except Exception as e:
@@ -3279,207 +5933,302 @@ class CircuitInspector:
         name_col = cols['name_col']
         remark_col = cols['remark_col']
 
-        # Modern dialog window
+        colors = {
+            'window': '#eef2f7', 'nav': '#0f172a', 'card': '#ffffff',
+            'text': '#0f172a', 'muted': '#64748b', 'line': '#e2e8f0',
+            'primary': '#2563eb', 'success': '#059669', 'warning': '#d97706',
+            'danger': '#dc2626', 'soft_blue': '#eff6ff', 'soft_green': '#ecfdf5',
+            'soft_orange': '#fff7ed'
+        }
+
         dlg = tk.Toplevel(self.root)
         dlg.title("Interphase Checklist Review")
-        dlg.geometry("950x520")
-        dlg.configure(bg='#f8fafc')
+        dlg.geometry("1050x650")
+        dlg.minsize(920, 580)
+        dlg.configure(bg=colors['window'])
         dlg.transient(self.root)
         dlg.grab_set()
-        
-        # Header frame
-        header_frame = tk.Frame(dlg, bg='#1e293b', height=60)
-        header_frame.pack(fill=tk.X)
-        header_frame.pack_propagate(False)
-        
-        tk.Label(header_frame, text="Interphase Checklist Review", 
-                bg='#1e293b', fg='white', 
-                font=('Segoe UI', 14, 'bold')).pack(pady=15)
-        
-        # Progress bar
-        progress_frame = tk.Frame(dlg, bg='#f8fafc')
-        progress_frame.pack(fill=tk.X, padx=20, pady=(15, 5))
-        
-        idx_label = tk.Label(progress_frame, text="", font=('Segoe UI', 11, 'bold'),
-                            bg='#f8fafc', fg='#1e293b')
-        idx_label.pack()
-        
-        # Content frame with modern styling
-        content_frame = tk.Frame(dlg, bg='white', relief=tk.FLAT, borderwidth=0)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        # Reference info frame
-        ref_frame = tk.Frame(content_frame, bg='#eff6ff', relief=tk.FLAT)
-        ref_frame.pack(fill=tk.X, padx=15, pady=(15, 10))
-        
-        ref_label = tk.Label(ref_frame, text="", font=('Segoe UI', 10),
-                            bg='#eff6ff', fg='#1e40af', anchor='w')
-        ref_label.pack(fill=tk.X, padx=15, pady=10)
-        
-        # Description text
-        tk.Label(content_frame, text="Description:", font=('Segoe UI', 9, 'bold'),
-                bg='white', fg='#64748b', anchor='w').pack(fill=tk.X, padx=15, pady=(5, 2))
-        
-        text_widget = tk.Text(content_frame, wrap=tk.WORD, height=12, 
-                             font=('Segoe UI', 10), bg='#f8fafc',
-                             relief=tk.FLAT, borderwidth=1, padx=10, pady=10)
-        text_widget.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
-        text_widget.config(state=tk.DISABLED)
 
-        pos = [0]
+        header = tk.Frame(dlg, bg=colors['nav'], height=72)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        heading = tk.Frame(header, bg=colors['nav'])
+        heading.pack(side=tk.LEFT, fill=tk.Y, padx=20)
+        tk.Label(heading, text="Interphase Checklist Review", bg=colors['nav'], fg='white',
+                 font=('Segoe UI Semibold', 17, 'bold')).pack(anchor='w', pady=(9, 0))
+        tk.Label(heading, text=f"{self.cabinet_id}  •  {self.project_name}", bg=colors['nav'],
+                 fg='#94a3b8', font=('Segoe UI', 10)).pack(anchor='w')
+        summary = tk.Frame(header, bg=colors['nav'])
+        summary.pack(side=tk.RIGHT, fill=tk.Y, padx=20)
+        summary_var = tk.StringVar(value=f"{len(matches)} items pending review")
+        tk.Label(summary, textvariable=summary_var, bg=colors['nav'],
+                 fg='#bbf7d0', font=('Segoe UI Semibold', 10, 'bold')).pack(anchor='e', pady=(15, 1))
+        tk.Label(summary, text="Mark each item OK, NOK, or N/A and add a remark if needed.",
+                 bg=colors['nav'], fg='#94a3b8', font=('Segoe UI', 9)).pack(anchor='e')
 
-        def show_item(p):
-            r, ref_str, desc = matches[p]
-            
-            # Update progress
-            progress_text = f"Item {p+1} of {len(matches)}"
-            progress_pct = f"({int((p+1)/len(matches)*100)}% complete)"
-            idx_label.config(text=f"{progress_text} {progress_pct}")
-            
-            # Update reference info
-            ref_label.config(text=f" Reference: {ref_str}  |  Row: {r}")
-            
-            # Update description
-            text_widget.config(state=tk.NORMAL)
-            text_widget.delete('1.0', tk.END)
-            text_widget.insert(tk.END, desc)
-            text_widget.config(state=tk.DISABLED)
+        body = tk.Frame(dlg, bg=colors['window'])
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+        sidebar = tk.Frame(body, bg=colors['card'], width=280, highlightthickness=1,
+                           highlightbackground=colors['line'])
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        tk.Label(sidebar, text="CHECKLIST QUEUE", bg=colors['card'], fg=colors['muted'],
+                 font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=14, pady=(12, 6))
+        state_bar = tk.Frame(sidebar, bg=colors['soft_blue'])
+        state_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
+        state_label_var = tk.StringVar(value=f"{len(matches)} items remaining")
+        tk.Label(state_bar, textvariable=state_label_var, bg=colors['soft_blue'],
+                 fg='#1d4ed8', font=('Segoe UI Semibold', 9, 'bold')).pack(anchor='w', padx=8, pady=6)
+        list_frame = tk.Frame(sidebar, bg=colors['card'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        item_list = tk.Listbox(list_frame, activestyle='none', selectmode=tk.SINGLE,
+                                font=('Segoe UI', 9), bg=colors['card'], fg=colors['text'],
+                                selectbackground='#dbeafe', selectforeground='#1e3a8a',
+                                relief=tk.FLAT, borderwidth=0, highlightthickness=0,
+                                yscrollcommand=scrollbar.set)
+        item_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=item_list.yview)
 
-        show_item(pos[0])
+        content = tk.Frame(body, bg=colors['window'])
+        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+        meta = tk.Frame(content, bg=colors['window'])
+        meta.pack(fill=tk.X)
+        ref_value = tk.StringVar(); row_value = tk.StringVar(); status_value = tk.StringVar()
 
-        def do_action_set_status(status_value):
-            r, ref_str, desc = matches[pos[0]]
+        def metric(parent, label, variable, tint, value_color):
+            card = tk.Frame(parent, bg=tint, highlightthickness=1, highlightbackground=colors['line'])
+            card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+            tk.Label(card, text=label, bg=tint, fg=colors['muted'],
+                     font=('Segoe UI Semibold', 7, 'bold')).pack(anchor='w', padx=10, pady=(7, 1))
+            tk.Label(card, textvariable=variable, bg=tint, fg=value_color,
+                     font=('Segoe UI Semibold', 11, 'bold')).pack(anchor='w', padx=10, pady=(0, 8))
+
+        metric(meta, "REFERENCE", ref_value, '#ffffff', colors['text'])
+        metric(meta, "ROW", row_value, '#ffffff', colors['text'])
+        metric(meta, "STATUS", status_value, '#ffffff', colors['warning'])
+
+        detail_card = tk.Frame(content, bg=colors['card'], highlightthickness=1,
+                               highlightbackground=colors['line'])
+        detail_card.pack(fill=tk.BOTH, expand=True, pady=(9, 0))
+        detail_head = tk.Frame(detail_card, bg=colors['card'])
+        detail_head.pack(fill=tk.X, padx=14, pady=(11, 6))
+        title_var = tk.StringVar(value="Checklist item")
+        tk.Label(detail_head, textvariable=title_var, bg=colors['card'], fg=colors['text'],
+                 font=('Segoe UI Semibold', 13, 'bold')).pack(side=tk.LEFT)
+        position_var = tk.StringVar()
+        tk.Label(detail_head, textvariable=position_var, bg=colors['card'], fg=colors['muted'],
+                 font=('Segoe UI', 9)).pack(side=tk.RIGHT)
+
+        tk.Label(detail_card, text="DESCRIPTION", bg=colors['card'], fg=colors['muted'],
+                 font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=14, pady=(4, 2))
+        description = tk.Text(detail_card, height=6, wrap=tk.WORD, bg='#f8fafc', fg=colors['text'],
+                              relief=tk.FLAT, padx=10, pady=8, font=('Segoe UI', 10), cursor='arrow')
+        description.pack(fill=tk.X, padx=14)
+        description.config(state=tk.DISABLED)
+
+        remark_frame = tk.Frame(detail_card, bg=colors['soft_orange'], highlightthickness=1,
+                                highlightbackground='#fed7aa')
+        remark_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 12))
+        tk.Label(remark_frame, text="REMARK (editable - required for N/A)", bg=colors['soft_orange'],
+                 fg='#c2410c', font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=10, pady=(8, 3))
+        remark_text = tk.Text(remark_frame, height=5, wrap=tk.WORD, bg='white', fg=colors['text'],
+                              relief=tk.FLAT, highlightthickness=1, highlightbackground='#fed7aa',
+                              highlightcolor=colors['warning'], padx=10, pady=8, font=('Segoe UI', 10))
+        remark_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        footer = tk.Frame(dlg, bg=colors['card'], height=64, highlightthickness=1,
+                          highlightbackground=colors['line'])
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        footer.pack_propagate(False)
+        left_actions = tk.Frame(footer, bg=colors['card'])
+        left_actions.pack(side=tk.LEFT, padx=14, pady=9)
+        right_actions = tk.Frame(footer, bg=colors['card'])
+        right_actions.pack(side=tk.RIGHT, padx=14, pady=9)
+
+        def button(parent, text, command, bg, fg='white', width=14):
+            return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                             activebackground=bg, activeforeground=fg, relief=tk.FLAT,
+                             borderwidth=0, cursor='hand2', font=('Segoe UI Semibold', 9, 'bold'),
+                             padx=10, pady=8, width=width)
+
+        current = {'index': 0, 'refreshing': False}
+
+        def refresh_list():
+            selected = current['index']
+            current['refreshing'] = True
+            item_list.delete(0, tk.END)
+            for r, ref_str, desc, remark in matches:
+                marker = " • " if remark.strip() else "   "
+                item_list.insert(tk.END, f"  {marker} Row {r}   •   {ref_str}")
+            item_list.selection_clear(0, tk.END)
+            if matches:
+                selected = max(0, min(selected, len(matches) - 1))
+                item_list.selection_set(selected)
+                item_list.activate(selected)
+                item_list.see(selected)
+            current['refreshing'] = False
+            summary_var.set(f"{len(matches)} items pending review")
+            state_label_var.set(f"{len(matches)} items remaining")
+
+        def show_item(index=None):
+            if not matches:
+                return
+            if index is not None:
+                current['index'] = max(0, min(len(matches) - 1, index))
+            r, ref_str, desc, remark = matches[current['index']]
+            title_var.set(f"Reference {ref_str}")
+            position_var.set(f"Item {current['index'] + 1} of {len(matches)}")
+            ref_value.set(ref_str)
+            row_value.set(str(r))
+            status_value.set("Pending review")
+            description.config(state=tk.NORMAL)
+            description.delete('1.0', tk.END)
+            description.insert('1.0', desc or 'No description available.')
+            description.config(state=tk.DISABLED)
+            remark_text.delete('1.0', tk.END)
+            remark_text.insert('1.0', remark or '')
+            refresh_list()
+            remark_text.focus_set()
+
+        def select_from_list(event=None):
+            if current.get('refreshing'):
+                return
+            selection = item_list.curselection()
+            if selection:
+                show_item(selection[0])
+
+        def go(delta):
+            show_item(current['index'] + delta)
+
+        def current_remark_text():
+            return remark_text.get('1.0', 'end-1c').strip()
+
+        def sync_current_remark_in_memory():
+            """Keep the in-memory matches list in sync with whatever is
+            currently typed in the remark box, so switching items in the
+            sidebar list doesn't lose an edit that wasn't explicitly saved."""
+            if not matches:
+                return
+            r, ref_str, desc, _old_remark = matches[current['index']]
+            matches[current['index']] = (r, ref_str, desc, current_remark_text())
+
+        def save_remark(show_confirmation=True):
+            """Write just the remark for the current item without changing status."""
+            if not matches:
+                return False
+            r, ref_str, desc, _old_remark = matches[current['index']]
+            remark = current_remark_text()
+            try:
+                self.writecell(ws, r, remark_col, remark)
+                wb.save(checklist_path)
+            except PermissionError:
+                messagebox.showerror("File Locked", "Please close the Excel file and try again.",
+                                     icon='error', parent=dlg)
+                return False
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update checklist:\n{e}", parent=dlg)
+                return False
+            matches[current['index']] = (r, ref_str, desc, remark)
+            self.mark_dirty()
+            if show_confirmation:
+                messagebox.showinfo("Remark saved", "The remark was saved for this item.", parent=dlg)
+            return True
+
+        def do_action_set_status(status_value_to_write):
+            r, ref_str, desc, _old_remark = matches[current['index']]
+            remark = current_remark_text()
             current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Get username
             username = self.logged_in_fullname or "Unknown User"
 
             try:
-                # Update status, name, and date
-                self.writecell(ws, r, status_col, status_value)
+                self.writecell(ws, r, status_col, status_value_to_write)
                 self.writecell(ws, r, name_col, username)
                 self.writecell(ws, r, date_col, current_date)
+                if remark:
+                    self.writecell(ws, r, remark_col, remark)
                 wb.save(checklist_path)
             except PermissionError:
-                messagebox.showerror("File Locked", 
-                                   "⚠️ Please close the Excel file and try again.",
-                                   icon='error')
+                messagebox.showerror("File Locked", "⚠️ Please close the Excel file and try again.",
+                                     icon='error', parent=dlg)
                 return
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to update checklist:\n{e}")
+                messagebox.showerror("Error", f"Failed to update checklist:\n{e}", parent=dlg)
                 return
 
-            if pos[0] < len(matches) - 1:
-                pos[0] += 1
-                show_item(pos[0])
-            else:
-                messagebox.showinfo("Review Complete", 
-                                  f"Checklist review finished!\n{len(matches)} items processed.",
-                                  icon='info')
+            self.mark_dirty()
+            matches.pop(current['index'])
+            if not matches:
+                messagebox.showinfo("Review Complete", "Checklist review finished!", icon='info', parent=dlg)
                 dlg.destroy()
+                return
+            current['index'] = min(current['index'], len(matches) - 1)
+            show_item(current['index'])
 
         def on_ok():
             do_action_set_status("OK")
-            self.sync_manager_stats_only()
 
         def on_nok():
             do_action_set_status("NOK")
-            self.sync_manager_stats_only()
 
         def on_na():
-            """Handle N/A status with mandatory remark"""
-            r, ref_str, desc = matches[pos[0]]
-            
-            # Mandatory remark dialog for N/A
-            remark = simpledialog.askstring(
-                "Remark Required",
-                "N/A status requires a remark.\nPlease provide a reason:",
-                parent=dlg
-            )
-            
-            if not remark or not remark.strip():
-                messagebox.showwarning(
+            """N/A requires a remark - reuse whatever is currently typed in
+            the editable remark box; only fall back to a prompt if it's empty."""
+            remark = current_remark_text()
+            if not remark:
+                remark = simpledialog.askstring(
                     "Remark Required",
-                    "You must provide a remark for N/A status.",
+                    "N/A status requires a remark.\nPlease provide a reason:",
                     parent=dlg
                 )
+                if remark:
+                    remark_text.delete('1.0', tk.END)
+                    remark_text.insert('1.0', remark)
+
+            if not remark or not remark.strip():
+                messagebox.showwarning("Remark Required",
+                                       "You must provide a remark for N/A status.", parent=dlg)
                 return
-            
+
+            r, ref_str, desc, _old_remark = matches[current['index']]
             current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
+            username = self.logged_in_fullname or "Unknown User"
+
             try:
-                # Get username
-                username = self.logged_in_fullname or "Unknown User"
-                
-                # Write all columns properly
                 self.writecell(ws, r, status_col, "N/A")
                 self.writecell(ws, r, date_col, current_date)
                 self.writecell(ws, r, name_col, username)
                 self.writecell(ws, r, remark_col, remark)
                 wb.save(checklist_path)
-                
-                messagebox.showinfo("Remark Saved", 
-                                  f"N/A status with remark:\n{remark}",
-                                  parent=dlg)
-                self.sync_manager_stats_only()
             except PermissionError:
-                messagebox.showerror("File Locked", 
-                                   "⚠️ Please close the Excel file and try again.",
-                                   icon='error',
-                                   parent=dlg)
+                messagebox.showerror("File Locked", "⚠️ Please close the Excel file and try again.",
+                                     icon='error', parent=dlg)
                 return
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to update checklist:\n{e}",
-                                   parent=dlg)
+                messagebox.showerror("Error", f"Failed to update checklist:\n{e}", parent=dlg)
                 return
 
-            if pos[0] < len(matches) - 1:
-                pos[0] += 1
-                show_item(pos[0])
-            else:
+            self.mark_dirty()
+            matches.pop(current['index'])
+            if not matches:
                 dlg.destroy()
+                return
+            current['index'] = min(current['index'], len(matches) - 1)
+            show_item(current['index'])
 
-        def on_prev():
-            if pos[0] > 0:
-                pos[0] -= 1
-                show_item(pos[0])
+        item_list.bind('<<ListboxSelect>>', select_from_list)
+        button(left_actions, "Previous", lambda: go(-1), '#e2e8f0', colors['text'], 11).pack(side=tk.LEFT, padx=(0, 8))
+        button(left_actions, "Next", lambda: go(1), '#e2e8f0', colors['text'], 11).pack(side=tk.LEFT)
+        button(right_actions, "Close", dlg.destroy, '#475569', width=10).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "NA - Not Applicable", on_na, colors['warning'], width=18).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "NOK", on_nok, colors['danger'], width=10).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "OK", on_ok, colors['success'], width=10).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "Save Remark", save_remark, colors['primary'], width=13).pack(side=tk.RIGHT)
+        dlg.bind('<Control-s>', lambda event: save_remark())
 
-        def on_next():
-            if pos[0] < len(matches) - 1:
-                pos[0] += 1
-                show_item(pos[0])
-
-        # Modern button frame
-        btn_frame = tk.Frame(dlg, bg='#f8fafc')
-        btn_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
-        
-        btn_style = {
-            'font': ('Segoe UI', 10, 'bold'),
-            'relief': tk.FLAT,
-            'borderwidth': 0,
-            'cursor': 'hand2',
-            'padx': 20,
-            'pady': 12
-        }
-
-        tk.Button(btn_frame, text="<- Previous", command=on_prev, bg='#94a3b8', 
-                 fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="✓ OK", command=on_ok, bg='#10b981', 
-                 fg='white', width=14, **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="✗ NOK", command=on_nok, bg='#ef4444', 
-                 fg='white', width=14, **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="(NA)Not Applicable", command=on_na, bg='#f59e0b', 
-                 fg='white', width=16, **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="Next ->", command=on_next, bg='#94a3b8', 
-                 fg='white', width=12, **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="Cancel", command=lambda: dlg.destroy(), 
-                 bg='#64748b', fg='white', width=10, **btn_style).pack(side=tk.RIGHT, padx=5)
-
+        refresh_list()
+        show_item(0)
         dlg.wait_window()
 
 
@@ -3522,7 +6271,8 @@ class CircuitInspector:
                 continue
 
             desc_val = self.readcell(ws, r, desc_col) or ''
-            matches.append((r, ref_str, str(desc_val)))
+            remark_val = self.readcell(ws, r, remark_col) or ''
+            matches.append((r, ref_str, str(desc_val), str(remark_val)))
 
         wb.close()
         return {
@@ -3642,6 +6392,23 @@ class CircuitInspector:
     # UPDATED: view_production_handbacks - Auto-open punch closing
     # ============================================================================
 
+    def _log_verification_error(self, stage, exc):
+        """Write verification failures to a durable log beside the application."""
+        import traceback
+        try:
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "verification_error.log")
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write("\n" + "=" * 80 + "\n")
+                log.write(f"{datetime.now().isoformat()} | stage={stage}\n")
+                log.write(f"cabinet={getattr(self, 'cabinet_id', '')}\n")
+                log.write(f"pdf={getattr(self, 'current_pdf_path', '')}\n")
+                log.write(f"excel={getattr(self, 'excel_file', '')}\n")
+                log.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            return log_path
+        except Exception:
+            return None
+
     def viewhandbacks(self):
         """View and verify items returned from production"""
         
@@ -3657,26 +6424,29 @@ class CircuitInspector:
         
         # Create modern dialog
         dlg = tk.Toplevel(self.root)
-        dlg.title("Production Handback - Verification")
-        dlg.geometry("1000x600")
+        dlg.title("Verify Production Rework")
+        dlg.geometry("1040x640")
         dlg.configure(bg='#f8fafc')
         dlg.transient(self.root)
         dlg.grab_set()
         
         # Header
-        header_frame = tk.Frame(dlg, bg='#7c3aed', height=60)
+        header_frame = tk.Frame(dlg, bg='#0f172a', height=82)
         header_frame.pack(fill=tk.X)
         header_frame.pack_propagate(False)
         
-        tk.Label(header_frame, text="🔍 Production Handback Verification", 
-                bg='#7c3aed', fg='white', 
-                font=('Segoe UI', 14, 'bold')).pack(pady=15)
+        tk.Label(header_frame, text="Verify Production Rework",
+                bg='#0f172a', fg='white',
+                font=('Segoe UI Semibold', 18, 'bold')).pack(anchor='w', padx=24, pady=(14, 2))
+        tk.Label(header_frame,
+                text="Review completed production actions, shared remarks, and close verified punches.",
+                bg='#0f172a', fg='#cbd5e1', font=('Segoe UI', 10)).pack(anchor='w', padx=24)
         
         # Info bar
         info_frame = tk.Frame(dlg, bg='#eff6ff')
         info_frame.pack(fill=tk.X, padx=20, pady=(15, 5))
         
-        tk.Label(info_frame, text=f"Total items pending verification: {len(pending_items)}", 
+        tk.Label(info_frame, text=f"{len(pending_items)} cabinet(s) ready for verification", 
                 bg='#eff6ff', fg='#1e40af', 
                 font=('Segoe UI', 10, 'bold')).pack(pady=8)
         
@@ -3684,7 +6454,7 @@ class CircuitInspector:
         list_frame = tk.Frame(dlg, bg='white')
         list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        tk.Label(list_frame, text="Select item to verify:", 
+        tk.Label(list_frame, text="Select a cabinet to review", 
                 font=('Segoe UI', 10, 'bold'),
                 bg='white', fg='#1e293b').pack(anchor='w', pady=(0, 10))
         
@@ -3711,60 +6481,109 @@ class CircuitInspector:
         def loadsel():
             selection = listbox.curselection()
             if not selection:
-                messagebox.showwarning("No Selection", "Please select an item first.")
+                messagebox.showwarning("No Selection", "Select a cabinet first.", parent=dlg)
                 return
-            
             item = pending_items[selection[0]]
-            
-            # Load the project
+
+            # Copy primitive queue data before destroying the modal list window.
+            item_data = dict(item)
+            dlg.grab_release()
+            dlg.destroy()
+            self.root.update_idletasks()
+
+            # Run loading after Tk has completely disposed of the queue dialog.
+            self.root.after(100, lambda: load_verification_item(item_data))
+
+        def load_verification_item(item):
+            stage = "initializing"
+            self.stopmultimark()  # never leave multi-mark mode active across a document swap
             try:
+                stage = "reading project"
                 project_data = self.db.get_project(item['cabinet_id'])
                 if not project_data:
-                    messagebox.showerror("Error", "Project not found in database")
-                    return
-                
-                self.cabinet_id = item['cabinet_id']
-                self.project_name = item['project_name']
-                self.sales_order_no = item['sales_order_no']
+                    raise RuntimeError(f"Project {item['cabinet_id']} was not found in the project database.")
+
+                stage = "validating files"
+                pdf_path = os.path.abspath(str(item.get('pdf_path') or ''))
+                excel_path = os.path.abspath(str(item.get('excel_path') or ''))
+                session_path = os.path.abspath(str(item.get('session_path') or '')) if item.get('session_path') else None
+                if not os.path.isfile(pdf_path):
+                    raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+                if not os.path.isfile(excel_path):
+                    raise FileNotFoundError(f"Excel file not found: {excel_path}")
+
+                stage = "closing previous document"
+                if self.pdf_document is not None:
+                    try:
+                        self.pdf_document.close()
+                    except Exception:
+                        pass
+                    self.pdf_document = None
+                self._clear_page_render_cache()
+
+                stage = "setting project context"
+                self.cabinet_id = str(item.get('cabinet_id') or '')
+                self.project_name = str(item.get('project_name') or '')
+                self.sales_order_no = str(item.get('sales_order_no') or '')
                 self.storage_location = project_data['storage_location']
-                
                 self.preparefolders()
-                
-                if not os.path.exists(item['pdf_path']):
-                    messagebox.showerror("Error", f"PDF file not found:\n{item['pdf_path']}")
-                    return
-                
-                self.pdf_document = fitz.open(item['pdf_path'])
-                self.current_pdf_path = item['pdf_path']
+
+                stage = "opening PDF"
+                self.pdf_document = fitz.open(pdf_path)
+                if len(self.pdf_document) == 0:
+                    raise RuntimeError("The selected PDF contains no pages.")
+                self.current_pdf_path = pdf_path
                 self.current_page = 0
                 self.zoom_level = 1.0
+                self._update_zoom_toolbar_label()
                 self.tool_mode = None
                 self.root.config(cursor="")
-                
-                self.excel_file = item['excel_path']
-                self.working_excel_path = item['excel_path']
-                
-                self.current_sr_no = self.getnextsr()
-                
-                if item.get('session_path') and os.path.exists(item['session_path']):
-                    self.loadfrompath(item['session_path'])
+
+                stage = "opening Punch Sheet"
+                # Validate the workbook before assigning it to the live workspace.
+                test_wb = load_workbook(excel_path, read_only=True, data_only=True)
+                if self.punch_sheet_name not in test_wb.sheetnames:
+                    sheet_names = ", ".join(test_wb.sheetnames)
+                    test_wb.close()
+                    raise RuntimeError(
+                        f"Punch Sheet '{self.punch_sheet_name}' was not found. Available sheets: {sheet_names}"
+                    )
+                test_wb.close()
+                self.excel_file = excel_path
+                self.working_excel_path = excel_path
+
+                stage = "loading annotation session"
+                self.annotations = []
+                self.session_refs.clear()
+                if session_path and os.path.isfile(session_path):
+                    self.loadfrompath(session_path)
                 else:
-                    self.annotations = []
-                    self.display()
-                
-                # UPDATED: Set status to "Rework being verified"
+                    self.display(preserve_view=False)
+                self.current_sr_no = self.getnextsr()
+
+                stage = "reading punches"
+                punches = self.openpuches()
+                if not punches:
+                    messagebox.showinfo(
+                        "No Open Punches",
+                        "The cabinet loaded successfully, but no open punch rows were found.",
+                        parent=self.root
+                    )
+                    return
+
+                stage = "updating workflow status"
                 self.update_status_and_sync('being_closed_by_quality')
-                
-                dlg.destroy()
-                
-                # UPDATED: Auto-open punch closing dialog
-                self.verifyprodrework(item)
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load item:\n{e}")
-                import traceback
-                traceback.print_exc()
-        
+
+                stage = "opening verification workspace"
+                self.punchclosing()
+
+            except BaseException as exc:
+                log_path = self._log_verification_error(stage, exc)
+                detail = f"Verification failed while {stage}.\n\n{type(exc).__name__}: {exc}"
+                if log_path:
+                    detail += f"\n\nDiagnostic log:\n{log_path}"
+                messagebox.showerror("Verification Error", detail, parent=self.root)
+
         # Buttons
         btn_frame = tk.Frame(dlg, bg='#f8fafc')
         btn_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
@@ -3777,7 +6596,7 @@ class CircuitInspector:
             'pady': 12
         }
         
-        tk.Button(btn_frame, text=" Load & Verify", command=loadsel,
+        tk.Button(btn_frame, text="Open Verification", command=loadsel,
                  bg='#3b82f6', fg='white', **btn_style).pack(side=tk.LEFT, padx=5)
         
         # REMOVED: Quick Verify button as requested
@@ -3793,11 +6612,15 @@ class CircuitInspector:
     # ============================================================================
 
     def verifyprodrework(self, item_data):
-        """Auto-open punch closing mode after loading production item"""
-        
-        # Count open punches
-        open_count = self.countopen()
-        self.punchclosing()
+        """Open verification safely after loading a production handback."""
+        try:
+            self.punchclosing()
+        except BaseException as exc:
+            log_path = self._log_verification_error("opening verification workspace", exc)
+            detail = f"The verification workspace could not open.\n\n{type(exc).__name__}: {exc}"
+            if log_path:
+                detail += f"\n\nDiagnostic log:\n{log_path}"
+            messagebox.showerror("Verification Error", detail, parent=self.root)
 
 
     # ============================================================================
@@ -3847,255 +6670,292 @@ class CircuitInspector:
 
     # UPDATED: punch_closing_mode - with auto-finalization
     def punchclosing(self):
-        """Modern dialog for punch closing workflow - Converts orange to green highlights"""
+        """Open the redesigned Quality verification workspace."""
         punches = self.openpuches()
-
         if not punches:
-            self.autofin()
+            messagebox.showinfo(
+                "No Open Punches",
+                "No open punch rows were found in the Punch Sheet.",
+                parent=self.root
+            )
             return
+        def punch_sort_key(punch):
+            sr_value = punch.get('sr_no')
+            try:
+                sr_key = (0, float(sr_value))
+            except (TypeError, ValueError):
+                sr_key = (1, str(sr_value or '').casefold())
+            return (not bool(punch.get('implemented')), sr_key)
+        punches.sort(key=punch_sort_key)
 
-        punches.sort(key=lambda p: (not p['implemented'], p['sr_no']))
-
-        # Modern dialog window
+        colors = {
+            'window': '#eef2f7', 'nav': '#0f172a', 'card': '#ffffff',
+            'text': '#0f172a', 'muted': '#64748b', 'line': '#e2e8f0',
+            'primary': '#2563eb', 'success': '#059669', 'warning': '#d97706',
+            'danger': '#dc2626', 'soft_blue': '#eff6ff', 'soft_green': '#ecfdf5',
+            'soft_orange': '#fff7ed'
+        }
         dlg = tk.Toplevel(self.root)
-        dlg.title("Punch Closing Mode")
-        dlg.geometry("950x650")
-        dlg.configure(bg='#f8fafc')
+        dlg.title("Quality Verification Workspace")
+        dlg.geometry("1050x650")
+        dlg.minsize(920, 580)
+        dlg.configure(bg=colors['window'])
         dlg.transient(self.root)
         dlg.grab_set()
-        
-        # Header
-        header_frame = tk.Frame(dlg, bg='#1e293b', height=50)
-        header_frame.pack(fill=tk.X)
-        header_frame.pack_propagate(False)
-        
-        tk.Label(header_frame, text="Punch Closing Mode", 
-                bg='#1e293b', fg='white', 
-                font=('Segoe UI', 13, 'bold')).pack(pady=12)
-        
-        # Progress
-        progress_frame = tk.Frame(dlg, bg='#f8fafc')
-        progress_frame.pack(fill=tk.X, padx=20, pady=(10, 5))
-        
-        idx_label = tk.Label(progress_frame, text="", font=('Segoe UI', 10, 'bold'),
-                            bg='#f8fafc', fg='#1e293b')
-        idx_label.pack()
-        
-        # Info cards
-        info_frame = tk.Frame(dlg, bg='#f8fafc')
-        info_frame.pack(fill=tk.X, padx=20, pady=8)
-        
-        # SR Number card
-        sr_card = tk.Frame(info_frame, bg='#dbeafe', relief=tk.FLAT)
-        sr_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        tk.Label(sr_card, text="SR No.", font=('Segoe UI', 8), 
-                bg='#dbeafe', fg='#1e40af').pack(anchor='w', padx=10, pady=(6, 2))
-        sr_label = tk.Label(sr_card, text="", font=('Segoe UI', 12, 'bold'),
-                           bg='#dbeafe', fg='#1e293b')
-        sr_label.pack(anchor='w', padx=10, pady=(0, 6))
-        
-        # Reference card
-        ref_card = tk.Frame(info_frame, bg='#e0e7ff', relief=tk.FLAT)
-        ref_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        tk.Label(ref_card, text="Reference", font=('Segoe UI', 8), 
-                bg='#e0e7ff', fg='#4338ca').pack(anchor='w', padx=10, pady=(6, 2))
-        ref_label = tk.Label(ref_card, text="", font=('Segoe UI', 12, 'bold'),
-                            bg='#e0e7ff', fg='#1e293b')
-        ref_label.pack(anchor='w', padx=10, pady=(0, 6))
-        
-        # Status card
-        status_card = tk.Frame(info_frame, bg='#fef3c7', relief=tk.FLAT)
-        status_card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
-        
-        tk.Label(status_card, text="Status", font=('Segoe UI', 8), 
-                bg='#fef3c7', fg='#92400e').pack(anchor='w', padx=10, pady=(6, 2))
-        impl_label = tk.Label(status_card, text="", font=('Segoe UI', 12, 'bold'),
-                             bg='#fef3c7', fg='#1e293b')
-        impl_label.pack(anchor='w', padx=10, pady=(0, 6))
-        
-        # Content
-        content_frame = tk.Frame(dlg, bg='white', relief=tk.FLAT)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=8)
-        
-        tk.Label(content_frame, text="Punch Description:", font=('Segoe UI', 9, 'bold'),
-                bg='white', fg='#64748b', anchor='w').pack(fill=tk.X, padx=15, pady=(8, 3))
-        
-        text_widget = tk.Text(content_frame, wrap=tk.WORD, height=9,
-                             font=('Segoe UI', 10), bg='#f8fafc',
-                             relief=tk.FLAT, padx=10, pady=8)
-        text_widget.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
-        text_widget.config(state=tk.DISABLED)
 
-        pos = [0]
+        header = tk.Frame(dlg, bg=colors['nav'], height=72)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        heading = tk.Frame(header, bg=colors['nav'])
+        heading.pack(side=tk.LEFT, fill=tk.Y, padx=20)
+        tk.Label(heading, text="Verify Production Rework", bg=colors['nav'], fg='white',
+                 font=('Segoe UI Semibold', 17, 'bold')).pack(anchor='w', pady=(9, 0))
+        tk.Label(heading, text=f"{self.cabinet_id}  •  {self.project_name}", bg=colors['nav'],
+                 fg='#94a3b8', font=('Segoe UI', 10)).pack(anchor='w')
+        summary = tk.Frame(header, bg=colors['nav'])
+        summary.pack(side=tk.RIGHT, fill=tk.Y, padx=20)
+        ready = sum(1 for item in punches if item['implemented'])
+        tk.Label(summary, text=f"{ready} of {len(punches)} ready to verify", bg=colors['nav'],
+                 fg='#bbf7d0', font=('Segoe UI Semibold', 10, 'bold')).pack(anchor='e', pady=(15, 1))
+        tk.Label(summary, text="Review the production action and close only verified punches.",
+                 bg=colors['nav'], fg='#94a3b8', font=('Segoe UI', 9)).pack(anchor='e')
 
-        def show_item():
-            p = punches[pos[0]]
-            
-            # Update progress
-            progress_text = f"Item {pos[0]+1} of {len(punches)}"
-            progress_pct = f"({int((pos[0]+1)/len(punches)*100)}% complete)"
-            idx_label.config(text=f"{progress_text} {progress_pct}")
-            
-            # Update info cards
-            sr_label.config(text=str(p['sr_no']))
-            ref_label.config(text=str(p['ref_no']))
-            
-            impl_status = "✓ Implemented" if p['implemented'] else "⚠ Not Implemented"
-            impl_color = '#10b981' if p['implemented'] else '#f59e0b'
-            impl_label.config(text=impl_status, fg=impl_color)
-            
-            # Update description
-            text_widget.config(state=tk.NORMAL)
-            text_widget.delete("1.0", tk.END)
-            text_widget.insert(tk.END, p['punch_text'])
-            text_widget.insert(tk.END, f"\n\n──────────────────\n")
-            text_widget.insert(tk.END, f"Category: {p['category']}\n")
+        body = tk.Frame(dlg, bg=colors['window'])
+        body.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+        sidebar = tk.Frame(body, bg=colors['card'], width=250, highlightthickness=1,
+                           highlightbackground=colors['line'])
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+        tk.Label(sidebar, text="VERIFICATION QUEUE", bg=colors['card'], fg=colors['muted'],
+                 font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=14, pady=(12, 6))
+        state_bar = tk.Frame(sidebar, bg=colors['soft_green'])
+        state_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
+        tk.Label(state_bar, text=f"{len(punches)} punches remaining", bg=colors['soft_green'],
+                 fg='#047857', font=('Segoe UI Semibold', 9, 'bold')).pack(anchor='w', padx=8, pady=6)
+        list_frame = tk.Frame(sidebar, bg=colors['card'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        punch_list = tk.Listbox(list_frame, activestyle='none', selectmode=tk.SINGLE,
+                                font=('Segoe UI', 9), bg=colors['card'], fg=colors['text'],
+                                selectbackground='#dcfce7', selectforeground='#14532d',
+                                relief=tk.FLAT, borderwidth=0, highlightthickness=0,
+                                yscrollcommand=scrollbar.set)
+        punch_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=punch_list.yview)
 
-            # Find annotation
-            ann = next((a for a in self.annotations 
-                       if a.get('sr_no') == p['sr_no'] 
-                       or (a.get('excel_row') == p['row'])), None)
-            
-            if ann and ann.get('quality_remark'):
-                text_widget.insert(tk.END, f"\n──────────────────\n")
-                text_widget.insert(tk.END, "Quality Remarks:\n")
-                text_widget.insert(tk.END, ann['quality_remark'])
+        content = tk.Frame(body, bg=colors['window'])
+        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+        meta = tk.Frame(content, bg=colors['window'])
+        meta.pack(fill=tk.X)
+        sr_value = tk.StringVar(); ref_value = tk.StringVar(); status_value = tk.StringVar()
+        def metric(parent, label, variable, tint, value_color):
+            card = tk.Frame(parent, bg=tint, highlightthickness=1, highlightbackground=colors['line'])
+            card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+            tk.Label(card, text=label, bg=tint, fg=colors['muted'],
+                     font=('Segoe UI Semibold', 7, 'bold')).pack(anchor='w', padx=10, pady=(7, 1))
+            tk.Label(card, textvariable=variable, bg=tint, fg=value_color,
+                     font=('Segoe UI Semibold', 11, 'bold')).pack(anchor='w', padx=10, pady=(0, 8))
+        metric(meta, "SR NUMBER", sr_value, '#ffffff', colors['text'])
+        metric(meta, "REFERENCE", ref_value, '#ffffff', colors['text'])
+        metric(meta, "IMPLEMENTATION", status_value, '#ffffff', colors['warning'])
 
-            text_widget.config(state=tk.DISABLED)
+        detail_card = tk.Frame(content, bg=colors['card'], highlightthickness=1,
+                               highlightbackground=colors['line'])
+        detail_card.pack(fill=tk.BOTH, expand=True, pady=(9, 0))
+        detail_head = tk.Frame(detail_card, bg=colors['card'])
+        detail_head.pack(fill=tk.X, padx=14, pady=(11, 6))
+        title_var = tk.StringVar(value="Punch details")
+        tk.Label(detail_head, textvariable=title_var, bg=colors['card'], fg=colors['text'],
+                 font=('Segoe UI Semibold', 13, 'bold')).pack(side=tk.LEFT)
+        position_var = tk.StringVar()
+        tk.Label(detail_head, textvariable=position_var, bg=colors['card'], fg=colors['muted'],
+                 font=('Segoe UI', 9)).pack(side=tk.RIGHT)
 
-        show_item()
+        description = tk.Text(detail_card, height=5, wrap=tk.WORD, bg='#f8fafc', fg=colors['text'],
+                              relief=tk.FLAT, padx=8, pady=6, font=('Segoe UI', 9), cursor='arrow')
+        description.pack(fill=tk.X, padx=14)
+        description.config(state=tk.DISABLED)
 
-        def add_remark():
-            """Add quality-side remark"""
-            p = punches[pos[0]]
-            
-            ann = next((a for a in self.annotations 
-                       if a.get('sr_no') == p['sr_no'] 
-                       or (a.get('excel_row') == p['row'])), None)
-            
-            current_remark = ann.get('quality_remark', '') if ann else ''
-            
-            remark = simpledialog.askstring(
-                "Add Quality Remark", 
-                f"Enter quality remark for SR {p['sr_no']}:\n(This will be sent back to production)",
-                initialvalue=current_remark,
-                parent=dlg
-            )
-            
-            if remark is not None:
-                if ann:
-                    ann['quality_remark'] = remark
-                    messagebox.showinfo("Success", "Quality remark added successfully!")
-                    show_item()
-                else:
-                    messagebox.showwarning("Warning", "No annotation found for this punch item.")
+        remarks = tk.Frame(detail_card, bg=colors['card'])
+        remarks.pack(fill=tk.BOTH, expand=True, padx=14, pady=9)
+        prod_col = tk.Frame(remarks, bg=colors['soft_green'], highlightthickness=1,
+                            highlightbackground='#a7f3d0')
+        prod_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        tk.Label(prod_col, text="PRODUCTION ACTION", bg=colors['soft_green'], fg='#047857',
+                 font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=10, pady=(8, 3))
+        production_text = tk.Text(prod_col, height=5, wrap=tk.WORD, bg=colors['soft_green'],
+                                  fg=colors['text'], relief=tk.FLAT, padx=12, pady=8,
+                                  font=('Segoe UI', 10), cursor='arrow')
+        production_text.pack(fill=tk.BOTH, expand=True, padx=3, pady=(0, 5))
+        production_text.config(state=tk.DISABLED)
+
+        quality_col = tk.Frame(remarks, bg=colors['soft_blue'], highlightthickness=1,
+                               highlightbackground='#bfdbfe')
+        quality_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
+        tk.Label(quality_col, text="QUALITY REMARK", bg=colors['soft_blue'], fg='#1d4ed8',
+                 font=('Segoe UI Semibold', 8, 'bold')).pack(anchor='w', padx=10, pady=(8, 3))
+        quality_text = tk.Text(quality_col, height=5, wrap=tk.WORD, bg='white', fg=colors['text'],
+                               relief=tk.FLAT, highlightthickness=1, highlightbackground='#bfdbfe',
+                               highlightcolor=colors['primary'], padx=10, pady=8, font=('Segoe UI', 10))
+        quality_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        footer = tk.Frame(dlg, bg=colors['card'], height=60, highlightthickness=1,
+                          highlightbackground=colors['line'])
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        footer.pack_propagate(False)
+        left_actions = tk.Frame(footer, bg=colors['card'])
+        left_actions.pack(side=tk.LEFT, padx=14, pady=9)
+        right_actions = tk.Frame(footer, bg=colors['card'])
+        right_actions.pack(side=tk.RIGHT, padx=14, pady=9)
+        def button(parent, text, command, bg, fg='white', width=16):
+            return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                             activebackground=bg, activeforeground=fg, relief=tk.FLAT,
+                             borderwidth=0, cursor='hand2', font=('Segoe UI Semibold', 9, 'bold'),
+                             padx=10, pady=8, width=width)
+
+        current = {'index': 0, 'refreshing': False}
+
+        def find_all_anns(punch):
+            """Return every annotation attached to this punch (its remark
+            holder plus every pink/green highlight added for it, including
+            any extras added via multi-mark mode)."""
+            sr_key = str(punch.get('sr_no', '')).strip()
+            row_key = str(punch.get('row', '')).strip()
+            return [a for a in self.annotations
+                    if (str(a.get('sr_no', '')).strip() == sr_key and sr_key)
+                    or (str(a.get('excel_row', '')).strip() == row_key and row_key)]
+
+        def find_ann(punch, create=False):
+            matches = find_all_anns(punch)
+            ann = next((a for a in matches if a.get('implementation_remark') is not None
+                        or a.get('quality_remark') is not None), matches[0] if matches else None)
+            if ann is None and create:
+                ann = {'type': 'punch_meta', 'page': None,
+                       'sr_no': punch.get('sr_no'), 'excel_row': punch.get('row'),
+                       'ref_no': punch.get('ref_no'), 'punch_text': punch.get('punch_text'),
+                       'category': punch.get('category'), 'timestamp': datetime.now().isoformat()}
+                self.annotations.append(ann)
+            return ann
+
+        def refresh_list():
+            selected = current['index']
+            current['refreshing'] = True
+            punch_list.delete(0, tk.END)
+            for item in punches:
+                marker = "READY" if item['implemented'] else "WAIT"
+                punch_list.insert(tk.END, f"  {marker:<5}   SR {item['sr_no']}   •   {item['ref_no']}")
+            punch_list.selection_clear(0, tk.END)
+            punch_list.selection_set(selected)
+            punch_list.activate(selected)
+            punch_list.see(selected)
+            current['refreshing'] = False
+
+        def show_item(index=None):
+            if index is not None:
+                current['index'] = max(0, min(len(punches) - 1, index))
+            p = punches[current['index']]
+            ann = find_ann(p)
+            sr_value.set(str(p['sr_no']))
+            ref_value.set(str(p['ref_no']))
+            status_value.set("Ready to verify" if p['implemented'] else "Not implemented")
+            title_var.set(str(p.get('category') or 'Punch details'))
+            position_var.set(f"Punch {current['index'] + 1} of {len(punches)}")
+            description.config(state=tk.NORMAL)
+            description.delete('1.0', tk.END)
+            description.insert('1.0', p.get('punch_text') or 'No description available.')
+            description.config(state=tk.DISABLED)
+            production_text.config(state=tk.NORMAL)
+            production_text.delete('1.0', tk.END)
+            production_text.insert('1.0', (ann or {}).get('implementation_remark') or 'No production remark for this punch.')
+            production_text.config(state=tk.DISABLED)
+            quality_text.delete('1.0', tk.END)
+            quality_text.insert('1.0', (ann or {}).get('quality_remark') or '')
+            refresh_list()
+            quality_text.focus_set()
+
+        def select_from_list(event=None):
+            if current.get('refreshing'):
+                return
+            selection = punch_list.curselection()
+            if selection:
+                show_item(selection[0])
+
+        def go(delta):
+            show_item(current['index'] + delta)
+
+        def save_remark(show_confirmation=True):
+            p = punches[current['index']]
+            ann = find_ann(p, create=True)
+            remark = quality_text.get('1.0', 'end-1c').strip()
+            if str(ann.get('quality_remark') or '') != remark:
+                ann['quality_remark'] = remark
+                self.mark_dirty()
+                self._write_session_file()
+            if show_confirmation:
+                messagebox.showinfo("Remark saved", "The Quality remark was saved for this punch.", parent=dlg)
+            return True
 
         def close_punch():
-            p = punches[pos[0]]
-
-            default_user = self.logged_in_fullname or "Unknown User"
-
-            name = default_user
-            if not name:
+            p = punches[current['index']]
+            if not p['implemented']:
+                messagebox.showwarning("Implementation pending",
+                                       "Production has not marked this punch as implemented.", parent=dlg)
                 return
-
+            save_remark(show_confirmation=False)
+            name = self.logged_in_fullname or "Unknown User"
             try:
                 wb = load_workbook(self.excel_file)
                 ws = wb[self.punch_sheet_name]
-
                 self.writecell(ws, p['row'], self.punch_cols['closed_name'], name)
-                self.writecell(ws, p['row'], self.punch_cols['closed_date'], 
-                              datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
+                self.writecell(ws, p['row'], self.punch_cols['closed_date'],
+                               datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 wb.save(self.excel_file)
                 wb.close()
-
             except PermissionError:
-                messagebox.showerror("File Locked", 
-                                   " Please close the Excel file and try again.")
+                messagebox.showerror("Excel file is open", "Close the Excel workbook and try again.", parent=dlg)
                 return
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to close punch:\n{e}")
+            except Exception as exc:
+                messagebox.showerror("Could not close punch", str(exc), parent=dlg)
                 return
-
-            # Find and convert annotation color
-            ann = next((a for a in self.annotations 
-                       if a.get('sr_no') == p['sr_no'] 
-                       or (a.get('excel_row') == p['row'])), None)
-            
-            if ann:
-                if ann.get('type') == 'highlight' and ann.get('color') == 'orange':
+            # Ensure a remark-holder annotation exists (created if needed),
+            # then flip EVERY highlight attached to this punch - not just one -
+            # from pink to green. This covers punches that were marked with
+            # multiple highlights via multi-mark mode.
+            find_ann(p, create=True)
+            all_anns = find_all_anns(p)
+            any_page = None
+            for ann in all_anns:
+                if ann.get('type') == 'highlight' and ann.get('color') == 'pink':
                     ann['color'] = 'green'
                 elif ann.get('type') == 'error':
                     ann['type'] = 'ok'
-                
                 ann['closed_by'] = name
                 ann['closed_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                print(f"⚠️ Warning: No annotation found for SR {p['sr_no']}")
-
-            self.display()
-            self.sync_manager_stats_only()
-
-            if pos[0] < len(punches) - 1:
-                pos[0] += 1
-                show_item()
-            else:
-                messagebox.showinfo("Complete", 
-                                  f"✓ All punches closed!\n{len(punches)} items processed.",
-                                  icon='info')
+                if ann.get('page') is not None and any_page is None:
+                    any_page = ann.get('page')
+            self.mark_dirty()
+            self._write_session_file()
+            punches.pop(current['index'])
+            if not punches:
                 dlg.destroy()
-                
-                # NEW: Auto-finalize after closing dialog
                 self.root.after(100, self.autofin)
+                return
+            current['index'] = min(current['index'], len(punches) - 1)
+            show_item(current['index'])
+            if any_page is not None:
+                self.root.after_idle(lambda: self.schedule_display(preserve_view=True, delay_ms=1))
 
-        def next_item():
-            if pos[0] < len(punches) - 1:
-                pos[0] += 1
-                show_item()
-
-        def prev_item():
-            if pos[0] > 0:
-                pos[0] -= 1
-                show_item()
-
-        # Buttons
-        btn_frame = tk.Frame(dlg, bg='#f8fafc', height=80)
-        btn_frame.pack(fill=tk.X, padx=20, pady=(10, 25))
-        btn_frame.pack_propagate(False)
-        
-        btn_container = tk.Frame(btn_frame, bg='#f8fafc')
-        btn_container.pack(expand=True)
-        
-        btn_style = {
-            'font': ('Segoe UI', 12, 'bold'),
-            'relief': tk.FLAT,
-            'borderwidth': 0,
-            'cursor': 'hand2',
-            'padx': 35,
-            'pady': 18,
-            'width': 15
-        }
-
-        tk.Button(btn_container, text="<- Previous", command=prev_item, 
-                 bg='#94a3b8', fg='white', **btn_style).pack(side=tk.LEFT, padx=8)
-        
-        tk.Button(btn_container, text="+ Add Remark", command=add_remark, 
-                 bg='#3b82f6', fg='white', **btn_style).pack(side=tk.LEFT, padx=8)
-        
-        close_btn_style = btn_style.copy()
-        close_btn_style['width'] = 18
-        tk.Button(btn_container, text="✓  CLOSE PUNCH", command=close_punch, 
-                 bg='#10b981', fg='white', **close_btn_style).pack(side=tk.LEFT, padx=8)
-        
-        tk.Button(btn_container, text="Next ->", command=next_item, 
-                 bg='#94a3b8', fg='white', **btn_style).pack(side=tk.LEFT, padx=8)
-        
-        tk.Button(btn_container, text="Cancel", command=dlg.destroy, 
-                 bg='#64748b', fg='white', **btn_style).pack(side=tk.LEFT, padx=8)
-
+        punch_list.bind('<<ListboxSelect>>', select_from_list)
+        button(left_actions, "Previous", lambda: go(-1), '#e2e8f0', colors['text'], 11).pack(side=tk.LEFT, padx=(0, 8))
+        button(left_actions, "Next", lambda: go(1), '#e2e8f0', colors['text'], 11).pack(side=tk.LEFT)
+        button(right_actions, "Close", dlg.destroy, '#475569', width=10).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "Verify & Close Punch", close_punch, colors['success'], width=20).pack(side=tk.RIGHT, padx=(10, 0))
+        button(right_actions, "Save Remark", save_remark, colors['primary'], width=13).pack(side=tk.RIGHT)
+        dlg.bind('<Control-s>', lambda event: save_remark())
+        dlg.bind('<Control-Return>', lambda event: close_punch())
+        refresh_list()
+        show_item(0)
         dlg.wait_window()
 
     def autofin(self):
@@ -4217,8 +7077,9 @@ class CircuitInspector:
                                   "Project details are incomplete.")
             return
         
-        # Check if there are any annotations
-        if not self.annotations:
+        # A punch may now be created directly without a visual annotation.
+        existing_punches = self.allexistingpunches()
+        if not self.annotations and not existing_punches:
             proceed = messagebox.askyesno(
                 "No Annotations",
                 "No annotations found. Handover anyway?",
@@ -4273,9 +7134,10 @@ class CircuitInspector:
             f"{self.cabinet_id}_annotations.json"
         )
         
-        error_highlights = [a for a in self.annotations 
-                           if a.get('type') == 'highlight' and a.get('color') == 'orange']
-        total_punches = len(error_highlights)
+        # Count the Punch Sheet as the source of truth so direct/manual
+        # punches are handed over even when no highlight annotation exists.
+        existing_punches = self.allexistingpunches()
+        total_punches = len(existing_punches)
         
         handover_data = {
             "cabinet_id": self.cabinet_id,
@@ -4286,7 +7148,7 @@ class CircuitInspector:
             "session_path": session_path if os.path.exists(session_path) else None,
             "total_punches": total_punches,
             "open_punches": open_punches,
-            "closed_punches": total_punches - open_punches,
+            "closed_punches": max(0, total_punches - open_punches),
             "handed_over_by": username,
             "handed_over_date": datetime.now().isoformat()
         }
@@ -4353,28 +7215,48 @@ class CircuitInspector:
     # ============================================================================
 
     def onclosing(self):
-        """Handle application closing with auto-save"""
+        """
+        Handle application closing with a final, guaranteed save.
+        FUNCTIONAL USE: This is the single place a clean shutdown flushes
+        everything - DB stats sync AND session JSON write - regardless of
+        whether anything was flagged dirty (belt-and-suspenders in case a
+        prior autosave tick silently failed). Most saves during normal use
+        are deferred (see mark_dirty/flush_pending_saves); this is where
+        they're guaranteed to land before the process exits. Note this only
+        covers a clean exit - an abrupt crash/kill relies on the periodic
+        background autosave (self._autosave_interval_ms) having already run
+        recently, since nothing can run after the process is killed.
+        """
+        if self._text_editor is not None:
+            self._commit_text_editor()
         if self.pdf_document and hasattr(self, 'project_dirs'):
             try:
-                print("\n Auto-saving before closing...")
-                self.savesession()
-                print(" Session auto-saved successfully")
-                
-                # Sync stats one last time
+                print("\n Final save before closing...")
+                self._dirty = True  # force a full flush regardless of current flag state
                 self.sync_manager_stats_only()
+                if self._write_session_file():
+                    print(" Session saved successfully")
+                self._dirty = False
                 print(" Statistics synced")
-                
+
             except Exception as e:
-                print(f" Auto-save on close failed: {e}")
+                print(f" Save on close failed: {e}")
                 # Ask user if they want to close anyway
                 proceed = messagebox.askyesno(
                     "Save Failed",
-                    f"Failed to auto-save:\n{e}\n\nClose anyway?",
+                    f"Failed to save:\n{e}\n\nClose anyway?",
                     icon='warning'
                 )
                 if not proceed:
                     return  # Don't close the application
-        
+
+        if getattr(self, '_autosave_after_id', None) is not None:
+            try:
+                self.root.after_cancel(self._autosave_after_id)
+            except Exception:
+                pass
+            self._autosave_after_id = None
+
         # Close the application
         self.root.destroy()
 
@@ -4413,36 +7295,216 @@ class CircuitInspector:
             print(f"Error saving recent project: {e}")
 
 
-    def loadrecprojui(self):
-        """Load and display recent projects from PostgreSQL - HIGHLIGHTER VERSION"""
-        self.updrecentdropdwn()
+    def _all_project_records(self):
+        """Return every cabinet ever created, newest activity first."""
+        try:
+            records = self.db.get_recent_projects(limit=1000000) or []
+        except TypeError:
+            records = self.db.get_recent_projects() or []
+        def stamp(item):
+            return str(item.get('last_accessed') or item.get('created_date') or '')
+        return sorted(records, key=stamp, reverse=True)
 
+    def loadrecprojui(self):
+        """Compatibility hook retained for startup; the browser loads live data on open."""
+        self._project_browser_records = self._all_project_records()
 
     def updrecentdropdwn(self):
-        """Update the recent projects dropdown from database"""
-        try:
-            recent_projects = self.db.get_recent_projects(limit=20)
-            
-            menu = self.recent_dropdown['menu']
-            menu.delete(0, 'end')
-            
-            if not recent_projects:
-                menu.add_command(label="No recent projects", command=lambda: None)
-                return
-            
-            for proj in recent_projects:
-                label = f"{proj['cabinet_id']} - {proj['project_name']}"
-                menu.add_command(
-                    label=label,
-                    command=lambda p=proj: self.loadrecentdb(p)
-                )
-                
-        except Exception as e:
-            print(f"Error updating recent dropdown: {e}")
+        """Compatibility hook for older save paths; refresh the all-project cache."""
+        self._project_browser_records = self._all_project_records()
 
+    def show_project_browser(self):
+        """Show all projects, then drill into the cabinets belonging to a project."""
+        records = self._all_project_records()
+        dlg = tk.Toplevel(self.root)
+        dlg.title("All Projects and Cabinets")
+        dlg.geometry("900x620")
+        dlg.minsize(720, 480)
+        dlg.configure(bg='#f8fafc')
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        header = tk.Frame(dlg, bg='#1e293b', height=58)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        title_var = tk.StringVar(value="All Projects")
+        tk.Label(header, textvariable=title_var, bg='#1e293b', fg='white',
+                 font=('Segoe UI', 14, 'bold')).pack(pady=14)
+
+        search_frame = tk.Frame(dlg, bg='#f8fafc')
+        search_frame.pack(fill=tk.X, padx=18, pady=(16, 8))
+        tk.Label(search_frame, text="Search:", bg='#f8fafc', fg='#334155',
+                 font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 8))
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var,
+                                font=('Segoe UI', 11))
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        body = tk.Frame(dlg, bg='white')
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=8)
+        tree = ttk.Treeview(body, columns=('name', 'count', 'updated'), show='headings')
+        tree.heading('name', text='Project')
+        tree.heading('count', text='Cabinets')
+        tree.heading('updated', text='Most Recent')
+        tree.column('name', width=430)
+        tree.column('count', width=100, anchor='center', stretch=False)
+        tree.column('updated', width=210, anchor='center', stretch=False)
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        state = {'project': None, 'items': {}}
+        def grouped_projects():
+            groups = {}
+            for row in records:
+                name = str(row.get('project_name') or 'Unnamed Project').strip()
+                groups.setdefault(name, []).append(row)
+            return sorted(groups.items(), key=lambda pair: str(
+                pair[1][0].get('last_accessed') or pair[1][0].get('created_date') or ''),
+                reverse=True)
+
+        def populate(*args):
+            query = search_var.get().strip().casefold()
+            tree.delete(*tree.get_children())
+            state['items'] = {}
+            if state['project'] is None:
+                for project_name, cabinets in grouped_projects():
+                    searchable = project_name + ' ' + ' '.join(str(c.get('cabinet_id', '')) for c in cabinets)
+                    if query and query not in searchable.casefold():
+                        continue
+                    latest = cabinets[0].get('last_accessed') or cabinets[0].get('created_date') or ''
+                    item = tree.insert('', tk.END, values=(project_name, len(cabinets), str(latest)[:19]))
+                    state['items'][item] = ('project', project_name, cabinets)
+            else:
+                for cabinet in state['project'][1]:
+                    cabinet_id = str(cabinet.get('cabinet_id') or '')
+                    so = str(cabinet.get('sales_order_no') or '')
+                    if query and query not in (cabinet_id + ' ' + so).casefold():
+                        continue
+                    updated = cabinet.get('last_accessed') or cabinet.get('created_date') or ''
+                    item = tree.insert('', tk.END, values=(cabinet_id, so, str(updated)[:19]))
+                    state['items'][item] = ('cabinet', cabinet)
+
+        def open_selected(event=None):
+            selected = tree.selection()
+            if not selected:
+                return
+            payload = state['items'].get(selected[0])
+            if not payload:
+                return
+            if payload[0] == 'project':
+                state['project'] = (payload[1], payload[2])
+                title_var.set(f"Project: {payload[1]}")
+                tree.heading('name', text='Cabinet ID')
+                tree.heading('count', text='Sales Order')
+                search_var.set('')
+                populate()
+            else:
+                dlg.destroy()
+                self.loadrecentdb(payload[1])
+
+        def go_back():
+            if state['project'] is None:
+                dlg.destroy()
+                return
+            state['project'] = None
+            title_var.set("All Projects")
+            tree.heading('name', text='Project')
+            tree.heading('count', text='Cabinets')
+            search_var.set('')
+            populate()
+
+        search_var.trace_add('write', populate)
+        tree.bind('<Double-Button-1>', open_selected)
+        tree.bind('<Return>', open_selected)
+        buttons = tk.Frame(dlg, bg='#f8fafc')
+        buttons.pack(fill=tk.X, padx=18, pady=(4, 16))
+        tk.Button(buttons, text="Back / Close", command=go_back, bg='#64748b', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=20, pady=9).pack(side=tk.LEFT)
+        tk.Button(buttons, text="Open", command=open_selected, bg='#3b82f6', fg='white',
+                  font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=26, pady=9).pack(side=tk.RIGHT)
+        populate()
+        search_entry.focus_set()
+
+    def scanned_system_book_path_from_drawing(self, file_path):
+        """Return the sibling 07-Scanned System Book path for a selected input drawing."""
+        if not file_path:
+            return ''
+        current = ntpath.dirname(ntpath.normpath(str(file_path).strip()))
+        while current:
+            if ntpath.basename(current).strip().casefold() == '02-customer inputs':
+                return ntpath.normpath(
+                    ntpath.join(ntpath.dirname(current), '07-Scanned System Book')
+                )
+            parent = ntpath.dirname(current)
+            if not parent or parent == current:
+                break
+            current = parent
+        return ''
+
+    def project_name_options_from_drawing(self, file_path):
+        """Return immediate folders from the sibling 07-Scanned System Book directory.
+
+        For a drawing selected anywhere below 02-Customer Inputs, move to the
+        project root and inspect 07-Scanned System Book. The Hazardous area
+        folder is excluded case-insensitively. Returned names are suitable for
+        an editable project-name dropdown, so the user can also type a new name.
+        """
+        if not file_path:
+            return []
+        scanned_dir = self.scanned_system_book_path_from_drawing(file_path)
+        if not scanned_dir:
+            return []
+        if not os.path.isdir(scanned_dir):
+            return []
+        try:
+            names = [
+                entry.name for entry in os.scandir(scanned_dir)
+                if entry.is_dir() and entry.name.strip().casefold() != 'hazardous area'
+            ]
+        except OSError as exc:
+            print(f"[WARN] Could not read project-name folders from {scanned_dir}: {exc}")
+            return []
+        return sorted(names, key=str.casefold)
+
+    def infer_project_from_drawing(self, file_path):
+        """Find an existing project for a drawing path and return its name, if any."""
+        if not file_path:
+            return ''
+        selected = ntpath.normcase(ntpath.normpath(str(file_path)))
+        records = self._all_project_records()
+        # Strongest match: selected drawing is under a project's recorded storage tree.
+        best = None
+        for row in records:
+            location = row.get('storage_location')
+            if not location:
+                continue
+            loc = ntpath.normcase(ntpath.normpath(str(location)))
+            if selected == loc or selected.startswith(loc.rstrip('\\/') + ntpath.sep):
+                if best is None or len(loc) > len(best[0]):
+                    best = (loc, str(row.get('project_name') or ''))
+        if best:
+            return best[1]
+        # Folder convention: <project>/07-Scanned System Book/<drawing>.
+        current = ntpath.dirname(selected)
+        while current:
+            if ntpath.basename(current).strip().casefold() == '07-scanned system book':
+                folder_name = ntpath.basename(ntpath.dirname(current)).replace('_', ' ').strip()
+                for row in records:
+                    if str(row.get('project_name') or '').replace('_', ' ').strip().casefold() == folder_name.casefold():
+                        return str(row.get('project_name') or '')
+                return folder_name
+            parent = ntpath.dirname(current)
+            if not parent or parent == current:
+                break
+            current = parent
+        return ''
 
     def loadrecentdb(self, project_data):
         """Load a recent project from database - HIGHLIGHTER VERSION"""
+        self.stopmultimark()  # never leave multi-mark mode active across a project swap
+        self.busy("Loading project...")
         try:
             # Set project details
             self.cabinet_id = project_data['cabinet_id']
@@ -4465,6 +7527,7 @@ class CircuitInspector:
             # Check PDF
             pdf_path = project_data.get('pdf_path')
             if not pdf_path or not os.path.exists(pdf_path):
+                self.unbusy()
                 messagebox.showerror("Error", 
                                    f"PDF file not found:\n{pdf_path}\n\n"
                                    "The file may have been moved or deleted.")
@@ -4476,24 +7539,30 @@ class CircuitInspector:
                 if old_excel_path and os.path.exists(old_excel_path):
                     try:
                         shutil.copy2(old_excel_path, expected_excel_path)
+                        self.unbusy()
                         messagebox.showinfo("Excel Migrated", 
                                           f"Excel file migrated to new location:\n{expected_excel_path}")
+                        self.busy("Loading project...")
                     except Exception as e:
+                        self.unbusy()
                         messagebox.showerror("Error", 
                                            f"Excel file not found and couldn't migrate:\n{e}")
                         return
                 else:
+                    self.unbusy()
                     messagebox.showerror("Error", 
                                        f"Excel file not found at:\n{expected_excel_path}\n\n"
                                        "The file may have been moved or deleted.")
                     return
             
             # Load PDF
+            self.busy("Opening PDF...")
             self.pdf_document = fitz.open(pdf_path)
             self.current_pdf_path = pdf_path
             self.current_page = 0
             self.annotations = []
             self.zoom_level = 1.0
+            self._update_zoom_toolbar_label()
             self.tool_mode = None
             
             # ADDED: Reset highlighter state
@@ -4510,17 +7579,19 @@ class CircuitInspector:
             
             # Load session
             if os.path.exists(expected_session_path):
+                self.busy("Loading saved session...")
                 self.loadfrompath(expected_session_path)
             else:
                 old_session_path = project_data.get('session_path')
                 if old_session_path and os.path.exists(old_session_path):
                     try:
                         shutil.copy2(old_session_path, expected_session_path)
+                        self.busy("Loading saved session...")
                         self.loadfrompath(expected_session_path)
                     except:
-                        self.display()
+                        self.display(preserve_view=False)
                 else:
-                    self.display()
+                    self.display(preserve_view=False)
             
             # Update database
             self.db.update_project(self.cabinet_id, {
@@ -4535,6 +7606,8 @@ class CircuitInspector:
             messagebox.showerror("Error", f"Failed to load project:\n{e}")
             import traceback
             traceback.print_exc()
+        finally:
+            self.unbusy()
 
     # ================================================================
     # COMPREHENSIVE STATUS AND STATISTICS MANAGEMENT
@@ -4628,6 +7701,70 @@ class CircuitInspector:
             print(f"Error counting open punches: {e}")
             return 0
         
+    def mark_dirty(self):
+        """
+        Flag that in-memory annotation/stat state has changed since the last
+        save, without doing any I/O right now.
+        FUNCTIONAL USE: Called after cheap, frequent actions (logging a punch,
+        closing a punch, checklist review clicks, etc.) instead of immediately
+        hitting the database and/or Excel. The periodic autosave loop (started
+        in uisetup/startautosaveloop) and onclosing() are what actually flush
+        this to disk, so repeated annotation actions stay fast and smooth.
+        """
+        self._dirty = True
+
+    def startautosaveloop(self):
+        """
+        Start the recurring background flush that saves dirty state.
+        FUNCTIONAL USE: Called once during setup. Reschedules itself via
+        root.after so it keeps running for the life of the app, flushing
+        at most every self._autosave_interval_ms while there is pending
+        (dirty) work. This is what makes "save at the end" also safe against
+        an abrupt crash - the gap between crash and last flush is bounded by
+        this interval instead of the whole session.
+        """
+        self._autosave_tick()
+
+    def _autosave_tick(self):
+        try:
+            if self._dirty:
+                self.flush_pending_saves(show_status=False)
+        except Exception as e:
+            print(f"[WARN] Autosave tick failed: {e}")
+        finally:
+            self._autosave_after_id = self.root.after(self._autosave_interval_ms, self._autosave_tick)
+
+    def flush_pending_saves(self, show_status=True):
+        """
+        Perform the actual batched save: sync DB stats and resave the session
+        JSON, then clear the dirty flag.
+        FUNCTIONAL USE: The single real "save everything" path. Called by the
+        periodic autosave loop, by onclosing() (final flush before exit/crash),
+        and by explicit user actions like Save Session. Excel workbook writes
+        for individual punch rows already happen immediately at the time
+        they're logged (openpyxl workbooks aren't safely shareable across a
+        long-lived handle without risking corruption on crash), but the
+        heavier DB stats sync and session JSON rewrite are batched here.
+        """
+        if not self._dirty:
+            return
+
+        try:
+            if self.pdf_document and self.cabinet_id:
+                self.sync_manager_stats_only()
+
+            if self.pdf_document and hasattr(self, 'project_dirs') and self.project_dirs.get("sessions"):
+                self._write_session_file()
+
+            self._dirty = False
+            self._last_flush_time = time.monotonic()
+
+            if show_status:
+                self.flashstat("Saved", bg='#10b981')
+
+        except Exception as e:
+            print(f"[WARN] flush_pending_saves failed: {e}")
+
     def sync_manager_stats_only(self, update_status_from_interphase=True):
         """Sync statistics and optionally update status from Interphase
         
@@ -4643,9 +7780,9 @@ class CircuitInspector:
                                      if ann.get('page') is not None))
             total_pages = len(self.pdf_document)
             
-            # Count punches
-            error_anns = [a for a in self.annotations if a.get('type') == 'error']
-            total_punches = len(error_anns)
+            # Count the Punch Sheet as the source of truth. This includes
+            # punches created directly from Edit or Add Punch without a highlight.
+            total_punches = len(self.allexistingpunches())
             open_punches = self.countopen()
             
             # Count implemented and closed
@@ -4897,11 +8034,12 @@ class CircuitInspector:
 # ================================================================
 
 def main():
+    prevent_power_throttling()
     root = tk.Tk()
+    root.title("Circuit Inspector")
     app = CircuitInspector(root)
     root.mainloop()
 
 
 if __name__ == "__main__":
     main()
-

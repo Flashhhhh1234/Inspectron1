@@ -4,7 +4,6 @@ import os
 import sys
 import subprocess
 import runpy
-from PIL import Image, ImageTk
 
 # Make sibling modules importable in frozen one-file builds.
 if getattr(sys, "frozen", False):
@@ -166,12 +165,22 @@ def dispatch_from_args() -> bool:
 # ADMIN PANEL - SECTION-WISE USER TABLES
 # ======================================================
 class AdminPanel:
+    BG = "#f4f6f8"
+    SURFACE = "#ffffff"
+    TEXT = "#1f2937"
+    MUTED = "#64748b"
+    BORDER = "#d9e0e7"
+    PRIMARY = "#2563eb"
+    SUCCESS = "#16803c"
+    DANGER = "#c93737"
+
     def __init__(self, parent, credentials):
         self.parent = parent
         self.window = tk.Toplevel(parent)
-        self.window.title("Admin Panel - User Management")
-        self.window.geometry("1020x690")
-        self.window.configure(bg="#111827")
+        self.window.title("TRACE - User Management")
+        self.window.geometry("1080x700")
+        self.window.minsize(900, 600)
+        self.window.configure(bg=self.BG)
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.credentials = credentials
@@ -179,132 +188,116 @@ class AdminPanel:
         self.trees = {}
         self.new_row_counter = 0
         self.row_passwords = {}
-
         self.cell_editor = None
         self.editor_ctx = None
 
-        tk.Label(
-            self.window,
-            text="User Management",
-            font=("Segoe UI", 18, "bold"),
-            bg="#111827",
-            fg="#f9fafb",
-        ).pack(pady=(18, 8))
+        self._configure_admin_styles()
 
-        tk.Label(
-            self.window,
-            text="Inline table editing: double-click a cell to edit, add row inline, save/delete by row.",
-            font=("Segoe UI", 10),
-            bg="#111827",
-            fg="#93c5fd",
-        ).pack(pady=(0, 12))
+        header = tk.Frame(self.window, bg=self.SURFACE, height=76,
+                          highlightthickness=1, highlightbackground=self.BORDER)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
 
-        notebook_wrap = tk.Frame(self.window, bg="#111827")
-        notebook_wrap.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 10))
+        title_wrap = tk.Frame(header, bg=self.SURFACE)
+        title_wrap.pack(side=tk.LEFT, padx=24, pady=14)
+        tk.Label(title_wrap, text="TRACE", font=("Segoe UI", 17, "bold"),
+                 bg=self.SURFACE, fg=self.TEXT).pack(anchor="w")
+        tk.Label(title_wrap, text="User management", font=("Segoe UI", 9),
+                 bg=self.SURFACE, fg=self.MUTED).pack(anchor="w")
 
-        self.notebook = ttk.Notebook(notebook_wrap)
+        tk.Button(header, text="Close", command=self.on_close, bg=self.SURFACE,
+                  fg=self.MUTED, activebackground="#eef2f6", relief=tk.FLAT,
+                  font=("Segoe UI", 9), cursor="hand2", padx=12, pady=6
+                  ).pack(side=tk.RIGHT, padx=24)
+
+        body = tk.Frame(self.window, bg=self.BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=22, pady=20)
+
+        self.notebook = ttk.Notebook(body, style="Admin.TNotebook")
         self.notebook.pack(fill=tk.BOTH, expand=True)
-
         for section in ["All"] + self.roles:
             self._create_section_tab(section)
 
-        self.status_label = tk.Label(
-            self.window,
-            text="Ready",
-            font=("Segoe UI", 9),
-            bg="#111827",
-            fg="#93c5fd",
-        )
-        self.status_label.pack(fill=tk.X, padx=16, pady=(0, 10), anchor="w")
+        status_bar = tk.Frame(self.window, bg=self.SURFACE, height=38,
+                              highlightthickness=1, highlightbackground=self.BORDER)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        status_bar.pack_propagate(False)
+        self.status_label = tk.Label(status_bar, text="Ready", font=("Segoe UI", 9),
+                                     bg=self.SURFACE, fg=self.MUTED, anchor="w")
+        self.status_label.pack(fill=tk.BOTH, expand=True, padx=22)
 
         self.refresh_users()
-        self.set_status("Double-click cells to edit inline. Use section buttons for row actions.")
+        self.set_status("Double-click a cell to edit. Use the buttons above the table for row actions.")
+
+    def _configure_admin_styles(self):
+        style = ttk.Style(self.window)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Admin.TNotebook", background=self.BG, borderwidth=0)
+        style.configure("Admin.TNotebook.Tab", padding=(15, 9), font=("Segoe UI", 9),
+                        background="#e7ebf0", foreground=self.MUTED)
+        style.map("Admin.TNotebook.Tab",
+                  background=[("selected", self.SURFACE)],
+                  foreground=[("selected", self.TEXT)])
+        style.configure("Admin.Treeview", background=self.SURFACE,
+                        fieldbackground=self.SURFACE, foreground=self.TEXT,
+                        rowheight=32, borderwidth=0, font=("Segoe UI", 9))
+        style.configure("Admin.Treeview.Heading", background="#eef2f6",
+                        foreground=self.TEXT, relief=tk.FLAT,
+                        font=("Segoe UI", 9, "bold"), padding=(8, 9))
+        style.map("Admin.Treeview", background=[("selected", "#dbeafe")],
+                  foreground=[("selected", self.TEXT)])
+
+    def _make_action_button(self, parent, text, command, bg, fg="white"):
+        button = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                           activebackground=bg, activeforeground=fg,
+                           font=("Segoe UI", 9, "bold"), padx=13, pady=7,
+                           relief=tk.FLAT, bd=0, cursor="hand2")
+        button.pack(side=tk.LEFT, padx=(0, 8))
+        return button
 
     def _create_section_tab(self, section):
-        tab = tk.Frame(self.notebook, bg="#111827")
-        self.notebook.add(tab, text=f"{section} Users")
+        tab = tk.Frame(self.notebook, bg=self.SURFACE)
+        self.notebook.add(tab, text=section)
 
-        table_wrap = tk.Frame(tab, bg="#111827")
-        table_wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 8))
+        toolbar = tk.Frame(tab, bg=self.SURFACE)
+        toolbar.pack(fill=tk.X, padx=14, pady=(14, 10))
+
+        add_title = f"Add {section} user" if section != "All" else "Add user"
+        self._make_action_button(toolbar, add_title,
+                                 lambda s=section: self.new_from_section(s), self.SUCCESS)
+        self._make_action_button(toolbar, "Save row",
+                                 lambda s=section: self.save_selected_row(s), self.PRIMARY)
+        self._make_action_button(toolbar, "Delete",
+                                 lambda s=section: self.delete_selected(s), self.DANGER)
+        self._make_action_button(toolbar, "Refresh", self.refresh_users,
+                                 "#e7ebf0", self.TEXT)
+
+        tk.Label(toolbar, text="Double-click any cell to edit", bg=self.SURFACE,
+                 fg=self.MUTED, font=("Segoe UI", 9)).pack(side=tk.RIGHT)
+
+        table_wrap = tk.Frame(tab, bg=self.BORDER, padx=1, pady=1)
+        table_wrap.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
 
         columns = ("Username", "Full Name", "Role", "Password")
-        tree = ttk.Treeview(table_wrap, columns=columns, show="headings", height=12)
+        tree = ttk.Treeview(table_wrap, columns=columns, show="headings",
+                            style="Admin.Treeview", height=14)
+        widths = {"Username": 180, "Full Name": 310, "Role": 160, "Password": 160}
         for col in columns:
             tree.heading(col, text=col)
-            if col == "Full Name":
-                tree.column(col, width=260)
-            elif col == "Username":
-                tree.column(col, width=150)
-            elif col == "Role":
-                tree.column(col, width=130)
-            else:
-                tree.column(col, width=120)
+            tree.column(col, width=widths[col], minwidth=110,
+                        anchor="w", stretch=True)
 
         y_scroll = ttk.Scrollbar(table_wrap, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=y_scroll.set)
-
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         tree.bind("<Double-1>", lambda e, s=section: self.start_inline_edit(e, s))
         tree.bind("<F2>", lambda _e, s=section: self.edit_selected_first_cell(s))
         self.trees[section] = tree
-
-        section_btn_row = tk.Frame(tab, bg="#111827")
-        section_btn_row.pack(fill=tk.X, padx=10, pady=(0, 10))
-
-        add_title = f"Add Row in {section}" if section != "All" else "Add Row"
-        tk.Button(
-            section_btn_row,
-            text=add_title,
-            command=lambda s=section: self.new_from_section(s),
-            bg="#16a34a",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            padx=12,
-            pady=6,
-            relief=tk.FLAT,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            section_btn_row,
-            text="Save Selected Row",
-            command=lambda s=section: self.save_selected_row(s),
-            bg="#2563eb",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            padx=12,
-            pady=6,
-            relief=tk.FLAT,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            section_btn_row,
-            text="Delete Selected",
-            command=lambda s=section: self.delete_selected(s),
-            bg="#dc2626",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            padx=12,
-            pady=6,
-            relief=tk.FLAT,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            section_btn_row,
-            text="Refresh",
-            command=self.refresh_users,
-            bg="#475569",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-            padx=12,
-            pady=6,
-            relief=tk.FLAT,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=4)
 
     def current_section(self):
         tab_id = self.notebook.select()
@@ -681,158 +674,153 @@ class AdminPanel:
 
 
 # ======================================================
-# LOGIN UI - WITH EMERSON LOGO
+# TRACE LOGIN UI
 # ======================================================
 class LoginPage:
+    BG = "#eef2f6"
+    CARD = "#ffffff"
+    TEXT = "#1f2937"
+    MUTED = "#6b7280"
+    BORDER = "#cfd8e3"
+    PRIMARY = "#2563eb"
+    PRIMARY_HOVER = "#1d4ed8"
+    DANGER = "#c93737"
+
     def __init__(self, root):
         self.root = root
-        self.root.title("Inprocess Tool - Login")
-        self.root.geometry("540x620")
+        self.root.title("TRACE - Login")
+        self.root.geometry("500x560")
         self.root.resizable(False, False)
-        self.root.configure(bg="#0f172a")
+        self.root.configure(bg=self.BG)
         self.credentials = load_credentials()
+        self.password_visible = False
 
-        bg_frame = tk.Frame(root, bg="#0f172a")
-        bg_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-        card = tk.Frame(bg_frame, bg="#111827", highlightthickness=1, highlightbackground="#1f2937")
-        card.pack(fill=tk.BOTH, expand=True)
-
-        header_frame = tk.Frame(card, bg="#111827", height=160)
-        header_frame.pack(fill=tk.X, padx=30, pady=(28, 12))
-        header_frame.pack_propagate(False)
-
-        try:
-            logo_path = get_asset_path("EmersonLogo.png")
-            if os.path.exists(logo_path):
-                logo_img = Image.open(logo_path)
-                logo_img.thumbnail((230, 120), Image.Resampling.LANCZOS)
-                self.logo_photo = ImageTk.PhotoImage(logo_img)
-                tk.Label(header_frame, image=self.logo_photo, bg="#111827").pack(pady=(4, 8))
-            else:
-                tk.Label(
-                    header_frame,
-                    text="INSPECTRON",
-                    font=("Segoe UI", 24, "bold"),
-                    bg="#111827",
-                    fg="#22d3ee",
-                ).pack(pady=(24, 8))
-        except Exception as e:
-            tk.Label(
-                header_frame,
-                text="INSPECTRON",
-                font=("Segoe UI", 24, "bold"),
-                bg="#111827",
-                fg="#22d3ee",
-            ).pack(pady=(24, 8))
-            print(f"[WARN] Error loading logo: {e}")
-
-        tk.Label(
-            header_frame,
-            text="Sign in to continue",
-            font=("Segoe UI", 11),
-            bg="#111827",
-            fg="#94a3b8",
-        ).pack()
-
-        container = tk.Frame(card, bg="#111827")
-        container.pack(fill=tk.BOTH, expand=True, padx=50, pady=(0, 28))
-
-        tk.Label(
-            container,
-            text="Username",
-            font=("Segoe UI", 10, "bold"),
-            bg="#111827",
-            fg="#e5e7eb",
-        ).pack(anchor="w", pady=(10, 6))
-
-        self.user_entry = tk.Entry(
-            container,
-            font=("Segoe UI", 12),
-            bg="#1f2937",
-            fg="#f9fafb",
-            relief=tk.FLAT,
-            insertbackground="#f9fafb",
-            highlightthickness=1,
-            highlightbackground="#334155",
-            highlightcolor="#06b6d4",
-            bd=0,
-        )
-        self.user_entry.pack(fill=tk.X, ipady=11)
-
-        tk.Label(
-            container,
-            text="Password",
-            font=("Segoe UI", 10, "bold"),
-            bg="#111827",
-            fg="#e5e7eb",
-        ).pack(anchor="w", pady=(20, 6))
-
-        self.pwd_entry = tk.Entry(
-            container,
-            font=("Segoe UI", 12),
-            show="*",
-            bg="#1f2937",
-            fg="#f9fafb",
-            relief=tk.FLAT,
-            insertbackground="#f9fafb",
-            highlightthickness=1,
-            highlightbackground="#334155",
-            highlightcolor="#06b6d4",
-            bd=0,
-        )
-        self.pwd_entry.pack(fill=tk.X, ipady=11)
-
-        self.login_btn = tk.Button(
-            container,
-            text="Sign In",
-            command=self.validate_login,
-            bg="#0891b2",
-            fg="white",
-            font=("Segoe UI", 12, "bold"),
-            relief=tk.FLAT,
-            cursor="hand2",
-            activebackground="#0e7490",
-            activeforeground="white",
-            bd=0,
-        )
-        self.login_btn.pack(fill=tk.X, pady=(30, 10), ipady=12)
-
-        self.hint_label = tk.Label(
-            container,
-            text=" ",
-            font=("Segoe UI", 9),
-            bg="#111827",
-            fg="#94a3b8",
-        )
-        self.hint_label.pack(pady=(6, 0))
-
+        self._configure_styles()
+        self._build_ui()
+        self._center_window()
         self.root.bind("<Return>", lambda _e: self.validate_login())
-        self.user_entry.focus()
+        self.user_entry.focus_set()
+
+    def _configure_styles(self):
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Trace.TEntry", fieldbackground="#ffffff",
+                        foreground=self.TEXT, insertcolor=self.TEXT,
+                        bordercolor=self.BORDER, lightcolor=self.BORDER,
+                        darkcolor=self.BORDER, padding=(12, 10),
+                        font=("Segoe UI", 11))
+        style.map("Trace.TEntry", bordercolor=[("focus", self.PRIMARY)],
+                  lightcolor=[("focus", self.PRIMARY)],
+                  darkcolor=[("focus", self.PRIMARY)])
+
+    def _build_ui(self):
+        card = tk.Frame(self.root, bg=self.CARD, highlightthickness=1,
+                        highlightbackground="#dde3ea")
+        card.pack(fill=tk.BOTH, expand=True, padx=36, pady=32)
+
+        header = tk.Frame(card, bg=self.CARD)
+        header.pack(fill=tk.X, padx=42, pady=(42, 24))
+
+        logo = tk.Canvas(header, width=42, height=42, bg=self.CARD,
+                         highlightthickness=0)
+        logo.pack()
+        logo.create_oval(3, 3, 39, 39, fill=self.PRIMARY, outline="")
+        logo.create_text(21, 21, text="T", fill="white",
+                         font=("Segoe UI", 18, "bold"))
+
+        tk.Label(header, text="TRACE", bg=self.CARD, fg=self.TEXT,
+                 font=("Segoe UI", 22, "bold")).pack(pady=(10, 3))
+        tk.Label(header, text="Sign in to continue", bg=self.CARD, fg=self.MUTED,
+                 font=("Segoe UI", 10)).pack()
+
+        form = tk.Frame(card, bg=self.CARD)
+        form.pack(fill=tk.X, padx=42)
+
+        self._label(form, "Username")
+        self.user_entry = ttk.Entry(form, style="Trace.TEntry")
+        self.user_entry.pack(fill=tk.X, pady=(6, 17))
+
+        self._label(form, "Password")
+        password_row = tk.Frame(form, bg=self.CARD)
+        password_row.pack(fill=tk.X, pady=(6, 4))
+        self.pwd_entry = ttk.Entry(password_row, style="Trace.TEntry", show="*")
+        self.pwd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.show_btn = tk.Button(password_row, text="Show", command=self.toggle_password,
+                                  bg=self.CARD, fg=self.PRIMARY, activebackground=self.CARD,
+                                  activeforeground=self.PRIMARY_HOVER, relief=tk.FLAT,
+                                  bd=0, cursor="hand2", font=("Segoe UI", 9), padx=8)
+        self.show_btn.pack(side=tk.RIGHT)
+
+        self.status_label = tk.Label(form, text="", bg=self.CARD, fg=self.DANGER,
+                                     anchor="w", font=("Segoe UI", 9))
+        self.status_label.pack(fill=tk.X, pady=(7, 4))
+
+        self.login_btn = tk.Button(form, text="Sign in", command=self.validate_login,
+                                   bg=self.PRIMARY, fg="white",
+                                   activebackground=self.PRIMARY_HOVER,
+                                   activeforeground="white", font=("Segoe UI", 10, "bold"),
+                                   relief=tk.FLAT, bd=0, cursor="hand2")
+        self.login_btn.pack(fill=tk.X, ipady=10, pady=(10, 0))
+
+        tk.Label(card, text="Authorized users only", bg=self.CARD, fg="#9ca3af",
+                 font=("Segoe UI", 8)).pack(side=tk.BOTTOM, pady=20)
+
+    def _label(self, parent, text):
+        tk.Label(parent, text=text, bg=self.CARD, fg=self.TEXT,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+    def _center_window(self):
+        self.root.update_idletasks()
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        x = max(0, (self.root.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.root.winfo_screenheight() - height) // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def toggle_password(self):
+        self.password_visible = not self.password_visible
+        self.pwd_entry.config(show="" if self.password_visible else "*")
+        self.show_btn.config(text="Hide" if self.password_visible else "Show")
+        self.pwd_entry.focus_set()
+
+    def _set_busy(self, busy):
+        self.login_btn.config(state=tk.DISABLED if busy else tk.NORMAL,
+                              text="Signing in..." if busy else "Sign in")
+        self.root.update_idletasks()
 
     def validate_login(self):
         username = self.user_entry.get().strip()
         password = self.pwd_entry.get()
+        self.status_label.config(text="")
 
         if not username or not password:
-            messagebox.showerror("Error", "Please enter username and password!")
+            self.status_label.config(text="Enter your username and password.")
+            (self.user_entry if not username else self.pwd_entry).focus_set()
             return
 
-        self.credentials = load_credentials()
-        role, full_name = authenticate_user(username, password, self.credentials)
-
-        if role:
+        self._set_busy(True)
+        try:
+            self.credentials = load_credentials()
+            role, full_name = authenticate_user(username, password, self.credentials)
+            if not role:
+                self.status_label.config(text="Invalid username or password.")
+                self.pwd_entry.delete(0, tk.END)
+                self.pwd_entry.focus_set()
+                return
             if role == "Admin":
                 self.root.withdraw()
                 AdminPanel(self.root, self.credentials)
                 return
-
-            launched = route_to_role(username, full_name, role)
-            if launched:
+            if route_to_role(username, full_name, role):
                 self.root.withdraw()
-        else:
-            messagebox.showerror("Login Failed", "Invalid username or password!")
-            self.pwd_entry.delete(0, tk.END)
+        except Exception as exc:
+            print(f"[ERROR] Login failed: {exc}")
+            self.status_label.config(text="Unable to sign in. Please try again.")
+        finally:
+            if self.root.winfo_exists():
+                self._set_busy(False)
 
 
 # ======================================================
