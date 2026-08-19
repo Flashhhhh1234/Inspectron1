@@ -4,7 +4,7 @@
 
 ## Overview
 
-Inspectron1 is a desktop quality-inspection platform for electrical/control cabinet workflows. It provides a role-driven process for:
+Inspectron1 (branded in-app as **TRACE**) is a desktop quality-inspection platform for electrical/control cabinet workflows. It provides a role-driven process for:
 
 - Quality inspection and punch creation on PDF drawings
 - Production rework execution and handback
@@ -12,6 +12,8 @@ Inspectron1 is a desktop quality-inspection platform for electrical/control cabi
 - Admin user maintenance
 
 The application is implemented as a Tkinter-based multi-module system where Login dispatches users to role-specific interfaces. The latest codebase uses a PostgreSQL-backed sqlite-compatibility layer for persistence while retaining sqlite-style data-access patterns for minimal disruption.
+
+The quality and production workbenches are now touch/tablet aware (Windows touch-gesture suppression, pinch-to-zoom, a global on-screen keyboard) and include cabinet setup management (replace the source PDF or edit cabinet metadata after initial save), an all-projects browser, and a background autosave loop for crash-safe session persistence. The Manager dashboard has been rebuilt on CustomTkinter with a modern sidebar shell, and the Admin panel has a refreshed light-theme UI.
 
 ---
 
@@ -40,6 +42,7 @@ The application is implemented as a Tkinter-based multi-module system where Logi
   8. [category_store_pg.py and category_catalog_format.py - Defect Library Persistence](#8-category_store_pgpy-and-category_catalog_formatpy---defect-library-persistence)
   9. [credentials_store_pg.py - Credential Table Persistence](#9-credentials_store_pgpy---credential-table-persistence)
   10. [path_policy.py and filedialog_compat.py - Runtime Resilience Utilities](#10-path_policypy-and-filedialog_compatpy---runtime-resilience-utilities)
+  11. [ui_overlays.py - Shared On-Screen Keyboard and Zoom Popup Widgets](#11-ui_overlayspy---shared-on-screen-keyboard-and-zoom-popup-widgets)
 - [User Workflows](#user-workflows)
   - [Quality Inspector Workflow](#quality-inspector-workflow)
   - [Production Team Workflow](#production-team-workflow)
@@ -52,6 +55,9 @@ The application is implemented as a Tkinter-based multi-module system where Logi
   - [4. Quality-Production Queue Lifecycle](#4-quality-production-queue-lifecycle)
   - [5. Management Analytics and Pareto Reporting](#5-management-analytics-and-pareto-reporting)
   - [6. Frozen-Build and Path Compatibility](#6-frozen-build-and-path-compatibility)
+  - [7. Touch/Tablet and On-Screen Keyboard Support](#7-touchtablet-and-on-screen-keyboard-support)
+  - [8. Cabinet Setup Management](#8-cabinet-setup-management)
+  - [9. Session Resilience](#9-session-resilience)
 - [API Reference](#api-reference)
 - [Performance Considerations](#performance-considerations)
 - [Security Notes](#security-notes)
@@ -65,13 +71,14 @@ The application is implemented as a Tkinter-based multi-module system where Logi
 ### Technology Stack
 
 - Language: Python 3.x
-- GUI: Tkinter
+- GUI: Tkinter, ttk, and CustomTkinter (manager.py sidebar shell)
 - PDF engine: PyMuPDF (fitz)
 - Spreadsheet engine: openpyxl
 - OCR stack: pytesseract + OpenCV + PIL
 - Charting and visualization: matplotlib
 - Data layer: PostgreSQL accessed through sqlite-style compatibility wrapper
 - Data serialization: JSON (sessions/config)
+- Touch/tablet support: Windows touch-gesture suppression and pinch-to-zoom handling via ctypes (quality.py, production.py)
 
 ### Runtime Architecture
 
@@ -119,6 +126,16 @@ The current repository state reflects these notable updates:
 - Enhanced frozen-app handling for module loading and asset resolution in Login.py and role modules
 - Inline Admin panel row editing in Login.py (tabbed by role) replacing dialog-only user maintenance flow
 - Tesseract path auto-resolution expanded to environment variables, PATH, and common Windows/Linux/macOS install locations
+- requirements.txt added, pinning the full third-party dependency set used by the application
+- Cabinet Setup actions added to quality.py: replace the source PDF (`select_different_pdf`, locked once annotations exist) and edit cabinet ID/project/sales-order details in place (`edit_cabinet_details`), including safe cabinet-ID migration of folders, session files, and DB records (`_migrate_cabinet_id`)
+- Direct page-number entry removed from the quality.py toolbar in favor of a read-only "Page: current / total" indicator driven purely by scroll position
+- New `ui_overlays.py` module introduces reusable `PopupKeyboard` and `ZoomAdjusterPopup` widget helpers for consistent on-screen keyboard and zoom UI patterns
+- Touch/tablet responsiveness added to quality.py and production.py: Windows touch-gesture suppression, pinch-to-zoom on the canvas, throttled/low-res drag rendering, and a global on-screen keyboard that appears automatically for any focused text field (including inside dialogs)
+- Text-box annotations in quality.py and production.py gained selection, drag-move, and resize handling, plus an inline text editor (double-click to edit, click-away to commit)
+- Background autosave loop added to quality.py (`startautosaveloop` / `_autosave_tick`) that periodically flushes dirty session/DB state, plus a "flush on close" safeguard
+- New All Projects/Cabinets browser in quality.py (`show_project_browser`) replacing the older recent-projects dropdown, with project grouping, cabinet drill-down, and search
+- manager.py dashboard shell rebuilt on CustomTkinter (`customtkinter`) with a dark sidebar navigation layout, replacing the previous flat top-nav Tkinter layout
+- Login.py Admin panel restyled with a light "TRACE" theme (header, status bar, and ttk Notebook/Treeview styling)
 
 ---
 
@@ -142,7 +159,16 @@ pip install opencv-python
 pip install pytesseract
 pip install matplotlib
 pip install psycopg2-binary
+pip install customtkinter
 ```
+
+Or install the pinned set directly from the repository:
+
+```bash
+pip install -r requirements.txt
+```
+
+Note: manager.py now imports `customtkinter` for its sidebar dashboard shell and will raise a runtime error on startup if it isn't installed; add it explicitly if it's missing from your environment's requirements.txt.
 
 Tesseract installation:
 
@@ -179,9 +205,15 @@ Inspectron1/
 ├── credentials_store_pg.py
 ├── path_policy.py
 ├── filedialog_compat.py
+├── ui_overlays.py
+├── requirements.txt
 ├── README.md
 └── assets/
-    └── postgres.json
+    ├── postgres.json
+    ├── EmersonLogo.png
+    ├── pen_icon.png
+    ├── text_icon.png
+    └── undo_icon.png
 ```
 
 ### Configure PostgreSQL and Base Path
@@ -261,8 +293,8 @@ Key functions:
 
 Primary classes:
 
-- LoginPage: login form and role routing trigger
-- AdminPanel: role-tabbed user list management surface with inline add/edit/delete/save operations
+- LoginPage: login form and role routing trigger, now presented under a "TRACE" light-theme card layout
+- AdminPanel: role-tabbed user list management surface with inline add/edit/delete/save operations, restyled with a "TRACE" light theme (header bar, status bar, and themed ttk Notebook/Treeview)
 
 ### 2. quality.py - Quality Inspection Workbench
 
@@ -274,12 +306,17 @@ Purpose:
 
 Major capability groups:
 
-- Multi-tool annotation: highlighter, pen, text
+- Multi-tool annotation: highlighter, pen, text (with select/move/resize and an inline text editor)
 - OCR-assisted text extraction from highlighted defects
 - Dynamic defect categorization from PostgreSQL-backed category catalog
 - Interphase status update and checklist-style review operations
 - Session save/load and annotated PDF export
 - Quality to Production handover queue creation
+- Cabinet Setup actions: replace the source PDF pre-annotation, and edit cabinet ID/project/sales-order metadata with automatic folder/session/DB migration on ID change
+- Touch/tablet support: Windows touch-gesture suppression, pinch-to-zoom, throttled low-res drag rendering, and a global on-screen keyboard for any focused text field
+- Background autosave loop that periodically flushes dirty session/DB state, plus a flush-on-close safeguard
+- All Projects/Cabinets browser with project grouping, cabinet drill-down, and search (replaces the old recent-projects dropdown)
+- Read-only page indicator driven by scroll position (direct page-number entry has been removed)
 
 Important classes:
 
@@ -301,6 +338,10 @@ Major capability groups:
 - Implemented/closed punch tracking through Excel
 - Complete-and-handback action into production_to_quality queue
 - Manager snapshot sync for progress visibility
+- Touch-friendly pen tool with throttled drag rendering and OS touch-gesture suppression, plus pinch-to-zoom on the canvas
+- Global on-screen keyboard relaunch on every text-field focus, for touchscreen/kiosk-style workstations
+- Text-box annotation selection, drag-move, resize, and inline editing
+- Modal loading/busy overlay for long-running operations
 
 Important classes:
 
@@ -322,11 +363,12 @@ Major capability groups:
 - Pareto-style category/subcategory analytics
 - Date and project-based filtering for report context
 - Category CRUD via PostgreSQL-backed normalized category tables
+- Modern CustomTkinter application shell: dark sidebar navigation (Dashboard, Analytics, Defect Library, Template Excel) replacing the previous flat top-nav layout, with restyled ttk Treeview/Combobox controls
 
 Important classes:
 
 - ManagerDatabase: analytics and cabinet data-access layer
-- ManagerUI: navigation, dashboard, analytics, and configuration surfaces
+- ManagerUI: navigation, dashboard, analytics, and configuration surfaces (now built on a `customtkinter` sidebar shell; requires the `customtkinter` package)
 
 ### 5. database_manager.py - Project and Handover Data Access
 
@@ -415,6 +457,16 @@ Purpose:
   - uses tkinter.filedialog when available
   - falls back to Tcl/Tk dialog commands in constrained/frozen environments
 
+### 11. ui_overlays.py - Shared On-Screen Keyboard and Zoom Popup Widgets
+
+Purpose:
+
+- Provides reusable `PopupKeyboard` and `ZoomAdjusterPopup` Tkinter widget classes for consistent touchscreen input and zoom-adjustment UI
+- `PopupKeyboard` auto-attaches to `Entry`, `Text`, and `Spinbox` widgets and shows/hides an on-screen keyboard on focus
+- `ZoomAdjusterPopup` renders a themed slider popup for adjusting and displaying zoom percentage
+
+Note: quality.py and production.py currently implement their own inline equivalents of this behavior directly; ui_overlays.py packages the same pattern as a standalone, importable module for reuse across modules.
+
 ---
 
 ## User Workflows
@@ -423,14 +475,15 @@ Purpose:
 
 ```text
 1. Login as Quality
-2. Load drawing PDF
+2. Load drawing PDF (or browse existing cabinets via the All Projects/Cabinets browser)
 3. Resolve or create project/cabinet context
 4. Annotate defects with highlighter/pen/text tools
 5. Use OCR-assisted category/template flow to generate punch descriptions
 6. Write punch entries into Punch Sheet and update Interphase progress
-7. Save session and optionally export annotated PDF
+7. Session autosaves in the background; save explicitly and optionally export annotated PDF
 8. Handover cabinet to production queue
 9. Receive handback and verify closure when returned
+10. If needed, replace the cabinet's PDF (before annotation) or edit cabinet details from the Cabinet Setup menu
 ```
 
 ### Production Team Workflow
@@ -507,6 +560,24 @@ Purpose:
 - Relative path persistence and policy-validated reconstruction
 - Dialog fallback path for constrained Tk environments
 
+### 7. Touch/Tablet and On-Screen Keyboard Support
+
+- Windows touch-gesture suppression so drag/pan reaches Tkinter mouse handlers directly instead of the OS pan gesture
+- Pinch-to-zoom on the drawing canvas with throttled, low-resolution rendering during active gestures
+- Global on-screen keyboard that appears automatically for any focused Entry/Text/Spinbox, including inside dialogs
+- Reusable `PopupKeyboard` / `ZoomAdjusterPopup` widget helpers in ui_overlays.py
+
+### 8. Cabinet Setup Management
+
+- Replace a cabinet's source PDF from the Tools menu, locked once annotations already exist for that cabinet/project
+- Edit cabinet ID, project name, and sales order number in place, with automatic migration of the cabinet's folder, session file, and database records when the cabinet ID changes
+- All Projects/Cabinets browser for searching and drilling into cabinets grouped by project
+
+### 9. Session Resilience
+
+- Background autosave loop that periodically flushes dirty session state and manager stats without blocking the UI
+- Flush-on-close safeguard to minimize data loss on abrupt exit
+
 ---
 
 ## API Reference
@@ -553,6 +624,21 @@ to_absolute_path(path: str | None) -> str | None
 to_relative_storage_location(storage_location: str | None) -> str
 resolve_storage_location(stored_value: str | None) -> str
 is_within_base_path(path: str | None) -> bool
+
+# Cabinet setup (quality.py)
+CircuitInspector.select_different_pdf() -> None
+CircuitInspector.edit_cabinet_details() -> None
+CircuitInspector._migrate_cabinet_id(old_id: str, new_id: str) -> None
+
+# Session resilience (quality.py)
+CircuitInspector.startautosaveloop() -> None
+CircuitInspector.flush_pending_saves(show_status: bool = True) -> None
+CircuitInspector.show_project_browser() -> None
+
+# Shared overlay widgets (ui_overlays.py)
+PopupKeyboard.attach() -> None
+PopupKeyboard.show(widget) -> None
+ZoomAdjusterPopup(root, current_zoom: float, on_change, on_close=None)
 ```
 
 ---
@@ -575,6 +661,7 @@ is_within_base_path(path: str | None) -> bool
 - credentials are managed in database tables; enforce strong password policy and role governance externally
 - audit-sensitive session and workbook files should be stored on controlled-access storage
 - apply least-privilege database roles for runtime users
+- cabinet ID edits trigger folder/session/DB migration; ensure the target cabinet folder path is not already in use and that migration failures are monitored so files and records cannot silently drift out of sync
 
 ---
 
@@ -586,11 +673,14 @@ is_within_base_path(path: str | None) -> bool
 - provide background OCR workers for smoother UI responsiveness
 - expand manager analytics with trend decomposition and first-pass-yield views
 - improve packaging docs for frozen deployments including required external assets
+- wire quality.py and production.py's inline on-screen keyboard/zoom popups over to the shared ui_overlays.py widgets to remove duplicated logic
+- add customtkinter to requirements.txt now that manager.py depends on it at import time
+- extend touch/tablet support (gesture suppression, pinch-to-zoom, on-screen keyboard) to production.py's remaining dialogs and to manager.py
 
 ---
 
 ## Document Metadata
 
-Document Version: 2.1.0
-Last Updated: April 22, 2026
+Document Version: 2.2.0
+Last Updated: August 19, 2026
 Maintained By: Kshitij Palshikar
