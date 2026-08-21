@@ -1,3 +1,12 @@
+import os
+
+# Set*both variable forms for PaddleX ve*sion compatibility.
+os.environ["PADDLE_PDX_MODEL_SOURCE"] = "BOS"
+os.environ["MODEL_SOURCE"] = "BOS"
+
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
 import tkinter as tk
 import ctypes
 from ctypes import wintypes
@@ -11,7 +20,6 @@ from datetime import datetime
 import shutil
 import tempfile
 import re
-import os
 import ntpath
 import json
 import numpy as np
@@ -34,7 +42,6 @@ from path_policy import (
     to_relative_storage_location,
 )
 from tkinter import ttk
-import pytesseract
 import cv2
 import io
 import filedialog_compat as filedialog
@@ -42,32 +49,58 @@ import filedialog_compat as filedialog
 User = sys.argv[1] if len(sys.argv) > 1 else None
 Name = sys.argv[2] if len(sys.argv) > 2 else None
 
-def configure_tesseract_cmd():
-    """Resolve Tesseract executable from env, PATH, and common install locations."""
-    env_candidates = [
-        os.environ.get("TESSERACT_CMD"),
-        os.environ.get("TESSERACT_PATH"),
-    ]
+# ---------------------------------------------------------------------------
+# OCR ENGINE: PaddleOCR (replaces Tesseract)
+# ---------------------------------------------------------------------------
+# PaddleOCR is loaded lazily (on first actual OCR call) rather than at import
+# time, since model initialization is a real cost (loads detection +
+# recognition + angle-classification weights) and would otherwise slow down
+# app startup even when no highlight has been drawn yet.
+#
+# use_textline_orientation=True enables PaddleOCR 3.x text-line orientation
+# classification. This replaces the deprecated use_angle_cls parameter and
+# allows rotated text lines to be corrected before recognition.
+#
+# Model download source: recent PaddleOCR/PaddleX releases default to
+# downloading model weights from Hugging Face. Setting PADDLE_PDX_MODEL_SOURCE
+# to "BOS" switches that back to Baidu Object Storage, PaddlePaddle's own
+# native hosting - useful in environments where Hugging Face isn't reachable
+# (e.g. behind a corporate proxy/firewall that only allows specific hosts).
+# This MUST be set before `from paddleocr import PaddleOCR` runs, since
+# PaddleX (the model-download layer PaddleOCR sits on) reads it at import
+# time - setting it later, inside get_paddle_ocr_engine(), would be too late
+# if anything else imports paddle-related modules first.
 
-    path_candidate = shutil.which("tesseract")
-    path_candidates = [path_candidate] if path_candidate else []
 
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    common_candidates = [
-        os.path.join(local_app_data, "Programs", "Tesseract-OCR", "tesseract.exe") if local_app_data else "",
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        "/usr/bin/tesseract",
-        "/usr/local/bin/tesseract",
-        "/opt/homebrew/bin/tesseract",
-    ]
+_paddle_ocr_engine = None
+_paddle_ocr_init_error = None
 
-    for candidate in env_candidates + path_candidates + common_candidates:
-        if candidate and os.path.exists(candidate):
-            pytesseract.pytesseract.tesseract_cmd = candidate
-            return candidate
 
-    return None
+def get_paddle_ocr_engine():
+    """Return a lazily-initialized, process-wide PaddleOCR engine instance."""
+    global _paddle_ocr_engine, _paddle_ocr_init_error
+    if _paddle_ocr_engine is not None:
+        return _paddle_ocr_engine
+    if _paddle_ocr_init_error is not None:
+        # Already failed once this run; don't retry on every highlight -
+        # that would re-attempt (and likely re-fail) model loading each time.
+        return None
+    try:
+        from paddleocr import PaddleOCR
+        _paddle_ocr_engine = PaddleOCR(
+            lang="en",
+            use_textline_orientation=False,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+        )
+        print(f"[INFO] PaddleOCR engine initialized (text-line orientation enabled, "
+              f"model source: {os.environ.get('PADDLE_PDX_MODEL_SOURCE', 'default')})")
+    except Exception as e:
+        _paddle_ocr_init_error = e
+        print(f"[WARN] PaddleOCR failed to initialize: {e}")
+        _paddle_ocr_engine = None
+    return _paddle_ocr_engine
+
 def prevent_power_throttling():
     """
     Ask Windows not to apply power-saving CPU throttling to this process.
@@ -115,12 +148,8 @@ def prevent_power_throttling():
         print(f"[WARN] Could not disable power throttling: {e}")
         return False
 
-TESSERACT_CMD = configure_tesseract_cmd()
-if TESSERACT_CMD:
-    print(f"[INFO] OCR engine path: {TESSERACT_CMD}")
-else:
-    print("[WARN] Tesseract was not found. Install it and add to PATH or set TESSERACT_CMD.")
-    
+TESSERACT_CMD = None  # kept for backward-compat references only; OCR now uses PaddleOCR (see get_paddle_ocr_engine)
+
 def app_base():
     """
     Returns the directory where the app is running from.
@@ -1208,9 +1237,11 @@ class CircuitInspector:
     def exctracttxt(self, annotation):
         """
         Extract text from highlighted annotation area using OCR with intelligent preprocessing.
-        FUNCTIONAL USE: Captures text from quality issues (error/wiring highlights) using Tesseract OCR.
-        Automatically expands highlight area, sharpens image, and handles rotation.
-        Enables automatic error documentation and punch list generation.
+        FUNCTIONAL USE: Captures text from quality issues (error/wiring highlights) using
+        PaddleOCR. Automatically expands highlight area, sharpens image, and reads text at
+        any orientation via PaddleOCR's text-line orientation classifier -
+        no manual 90-degree rotation retries needed, and no all-caps requirement: any
+        legible text extracted from the highlighted area is accepted.
         Args: annotation - Dictionary with highlight bbox and page info
         Returns: Extracted and cleaned text string or None if OCR fails
         """
@@ -1267,130 +1298,95 @@ class CircuitInspector:
             # Convert to grayscale and threshold in one go
             gray = cv2.cvtColor(upscaled, cv2.COLOR_RGB2GRAY)
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Convert to PIL once (reuse for all rotations)
-            pil_img = Image.fromarray(binary)
-            
-            # Smart rotation strategy: Try 0° first (most common), then others only if needed
-            # First try: Normal orientation (0°)
-            text, confidence = self.ocrcon(pil_img)
-            
-            # If confidence is high enough (>60%), accept immediately
-            if confidence > 60 and text:
-                cleaned_text = self.cleantxt(text)
-                if cleaned_text and len(cleaned_text) > 1:
-                    # CHECK IF TEXT IS ALL CAPS
-                    if self.caps(cleaned_text):
-                        print(f" Extracted (0°, {confidence:.1f}%): '{cleaned_text}'")
-                        return cleaned_text
-                    else:
-                        print(f" Text not in all caps, skipping: '{cleaned_text}'")
-                        return None
-            
-            # Otherwise, try other rotations
-            best_text = text
-            best_confidence = confidence
-            best_rotation = 0
-            
-            rotations = [
-                (90, pil_img.rotate(270, expand=True), "90°"),   # PIL rotate is counter-clockwise
-                (270, pil_img.rotate(90, expand=True), "270°"),
-                (180, pil_img.rotate(180, expand=True), "180°")
-            ]
-            
-            for angle, rotated_img, label in rotations:
-                text, conf = self.ocrcon(rotated_img)
-                
-                if conf > best_confidence:
-                    best_confidence = conf
-                    best_text = text
-                    best_rotation = angle
-                    
-                    #Early exit if we find high confidence result
-                    if conf > 70:
-                        break
-            
-            if best_text:
-                if best_rotation != 0:
-                    print(f" Best: {best_rotation}° ({best_confidence:.1f}%)")
-                
-                cleaned_text = self.cleantxt(best_text)
-                
-                if cleaned_text and len(cleaned_text) > 1:
-                    #CHECK IF TEXT IS ALL CAPS
-                    if self.caps(cleaned_text):
-                        print(f" Extracted: '{cleaned_text}'")
-                        return cleaned_text
-                    else:
-                        print(f" Text not in all caps, skipping: '{cleaned_text}'")
-                        return None
-            
+
+            # PaddleOCR expects a 3-channel image (BGR or RGB both work fine
+            # for its internal preprocessing); the thresholded binary result
+            # is single-channel, so stack it back to 3 channels.
+            ocr_ready = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+            # Single OCR pass: PaddleOCR's text-line orientation classifier
+            # already detects and corrects each text line's
+            # orientation internally, so unlike the old Tesseract path we do
+            # not need to manually rotate the crop in 90-degree steps and
+            # re-run OCR per rotation - any orientation is handled in one call.
+            text, confidence = self.ocrcon(ocr_ready)
+
+            if not text:
+                print(" No text found")
+                return None
+
+            cleaned_text = self.cleantxt(text)
+            if cleaned_text and len(cleaned_text) > 1:
+                print(f" Extracted ({confidence:.1f}%): '{cleaned_text}'")
+                return cleaned_text
+
             print(" No text found")
             return None
-                    
+
         except Exception as e:
             print(f" OCR Error: {e}")
             return None
 
 
-    def caps(self, text):
+    def ocrcon(self, image):
         """
-        Check if text is in all caps (ignoring non-letter characters).
-        FUNCTIONAL USE: Determines if OCR text should be classified as all-uppercase for quality metrics.
-        Args: text - Text to check
-        Returns: bool - True if all letters are uppercase, False otherwise
-        """
-        if not text:
-            return False
-        
-        # Extract only letter characters
-        letters = [char for char in text if char.isalpha()]
-        
-        # If no letters found, return False
-        if not letters:
-            return False
-        
-        # Check if all letters are uppercase
-        return all(char.isupper() for char in letters)
-
-
-    def ocrcon(self, pil_image):
-        """
-        Run OCR and calculate average confidence score.
-        FUNCTIONAL USE: Executes Tesseract OCR on image and measures extraction reliability.
+        Run PaddleOCR on an image (numpy array, BGR/RGB or grayscale-as-3ch)
+        and return the combined recognized text plus an average confidence
+        percentage, in the same (text, confidence_0_to_100) shape the rest of
+        the pipeline expects from the old Tesseract-based ocrcon().
+        FUNCTIONAL USE: Executes OCR and measures extraction reliability.
         High confidence indicates good OCR quality, low suggests manual review needed.
-        Args: pil_image - PIL Image object to extract text from
+        Args: image - numpy array image (as produced by cv2/PIL->np.array)
         Returns: Tuple of (extracted_text, average_confidence_percent)
         """
+        engine = get_paddle_ocr_engine()
+        if engine is None:
+            print(" OCR processing error: PaddleOCR engine is not available "
+                  "(failed to initialize - is paddleocr/paddlepaddle installed?)")
+            return None, 0
+
         try:
-            # Get OCR data with confidence scores
-            ocr_data = pytesseract.image_to_data(
-                pil_image, 
-                lang='eng', 
-                config='--psm 6',  # Assume uniform block of text
-                output_type=pytesseract.Output.DICT
-            )
-            
+            img_array = np.array(image) if not isinstance(image, np.ndarray) else image
+            results = engine.predict(img_array)
+
             text_parts = []
             confidences = []
-            
-            # Extract words with valid confidence
-            for i, conf in enumerate(ocr_data['conf']):
-                if conf > 0:  # Valid confidence
-                    word = ocr_data['text'][i].strip()
-                    if word:
-                        text_parts.append(word)
-                        confidences.append(conf)
-            
+
+            # PaddleOCR 3.x returns Result objects. Their JSON payload contains
+            # rec_texts and rec_scores under the "res" key.
+            for item in results or []:
+                payload = getattr(item, "json", None)
+                if callable(payload):
+                    payload = payload()
+                if payload is None and isinstance(item, dict):
+                    payload = item
+                if not isinstance(payload, dict):
+                    continue
+
+                data = payload.get("res", payload)
+                recognized_texts = data.get("rec_texts", []) or []
+                recognized_scores = data.get("rec_scores", []) or []
+
+                for index, line_text in enumerate(recognized_texts):
+                    line_text = str(line_text or "").strip()
+                    if not line_text:
+                        continue
+                    text_parts.append(line_text)
+                    if index < len(recognized_scores):
+                        confidences.append(float(recognized_scores[index]) * 100.0)
+
             if text_parts:
                 text = ' '.join(text_parts)
-                avg_confidence = sum(confidences) / len(confidences)
+                avg_confidence = (
+                    sum(confidences) / len(confidences)
+                    if confidences else 0.0
+                )
                 return text, avg_confidence
-            
+
             return None, 0
-            
+
         except Exception as e:
-            print(f" OCR processing error: {e}")
+            print(f" OCR processing error: {type(e).__name__}: {e}")
             return None, 0
 
 
@@ -1485,21 +1481,17 @@ class CircuitInspector:
             except:
                 pass
             
-            # OCR
-            pil_img = Image.fromarray(binary)
-            text = pytesseract.image_to_string(pil_img, lang='eng', config='--psm 6')
+            # OCR - PaddleOCR (angle classifier handles any text orientation;
+            # no all-caps requirement, any legible text is accepted)
+            ocr_ready = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+            text, _confidence = self.ocrcon(ocr_ready)
             
             # Clean
-            text = ' '.join(text.split()).strip()
+            text = ' '.join((text or '').split()).strip()
             
             if text and len(text) > 1:
-                #  CHECK IF TEXT IS ALL CAPS
-                if self.caps(text):
-                    print(f" Extracted: '{text}'")
-                    return text
-                else:
-                    print(f" Text not in all caps, skipping: '{text}'")
-                    return None
+                print(f" Extracted: '{text}'")
+                return text
             else:
                 print(" No text found")
                 return None
@@ -3271,6 +3263,56 @@ class CircuitInspector:
                 # Small delay avoids flicker when focus moves between two text fields
                 self.root.after(150, self._maybe_hide_keyboard)
 
+        def first_editable_text_widget(parent):
+            """Return the first enabled Entry/Text field in a dialog's widget tree."""
+            try:
+                children = parent.winfo_children()
+            except tk.TclError:
+                return None
+
+            for child in children:
+                if isinstance(child, (tk.Entry, tk.Text, ttk.Entry)):
+                    try:
+                        state = str(child.cget('state'))
+                    except (tk.TclError, AttributeError):
+                        state = 'normal'
+                    if state not in ('disabled', 'readonly'):
+                        return child
+                nested = first_editable_text_widget(child)
+                if nested is not None:
+                    return nested
+            return None
+
+        def focus_dialog_input(dialog):
+            """Move the caret into the first input whenever a text dialog opens."""
+            try:
+                if not dialog.winfo_exists():
+                    return
+
+                focused = dialog.focus_get()
+                if (isinstance(focused, (tk.Entry, tk.Text, ttk.Entry)) and
+                        self._widget_is_inside(focused, dialog)):
+                    return
+
+                target = first_editable_text_widget(dialog)
+                if target is None:
+                    return
+
+                dialog.lift()
+                restore_text_focus(target)
+                show_onscreen_keyboard()
+            except (tk.TclError, AttributeError):
+                pass
+
+        def on_dialog_map(event):
+            dialog = event.widget
+            # Run more than once because simpledialog creates/maps its controls
+            # in stages, and the touch keyboard can briefly take Windows focus.
+            self.root.after_idle(lambda d=dialog: focus_dialog_input(d))
+            self.root.after(80, lambda d=dialog: focus_dialog_input(d))
+            self.root.after(250, lambda d=dialog: focus_dialog_input(d))
+
+        self.root.bind_class("Toplevel", "<Map>", on_dialog_map, add="+")
         self.root.bind_class("Entry", "<FocusIn>", on_focus_in, add="+")
         self.root.bind_class("Text", "<FocusIn>", on_focus_in, add="+")
         self.root.bind_class("TEntry", "<FocusIn>", on_focus_in, add="+")
@@ -3398,48 +3440,34 @@ class CircuitInspector:
             font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, borderwidth=0,
             padx=14, pady=10, cursor='hand2'
         ).pack(side=tk.LEFT)
-        # Center - HIGHLIGHTER COLOR PICKER (Circular button) - UPDATED
+        # Center - THREE DIRECT HIGHLIGHTER COLOR CIRCLES
+        # No label or dropdown: each available color is always visible and can
+        # be selected directly with one click.
         highlighter_frame = tk.Frame(toolbar, bg='#1e293b')
         highlighter_frame.pack(side=tk.LEFT, padx=30)
-        
-        tk.Label(highlighter_frame, text="Highlighter:", bg='#1e293b', fg='#94a3b8',
-                font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT, padx=(0, 10))
-        
-        # Color picker with circular button
+
         self.color_picker_frame = tk.Frame(highlighter_frame, bg='#1e293b')
         self.color_picker_frame.pack(side=tk.LEFT)
-        
-        # Circular color button - NO BOX BORDER
-        self.color_canvas = tk.Canvas(
-            self.color_picker_frame,
-            width=44,
-            height=44,
-            bg='#1e293b',
-            highlightthickness=0,
-            borderwidth=0,
-            cursor='hand2'
-        )
-        self.color_canvas.pack(side=tk.LEFT)
+        self.color_canvases = {}
+
+        for color_key in ('green', 'pink', 'yellow'):
+            color_canvas = tk.Canvas(
+                self.color_picker_frame,
+                width=44,
+                height=44,
+                bg='#1e293b',
+                highlightthickness=0,
+                borderwidth=0,
+                cursor='hand2'
+            )
+            color_canvas.pack(side=tk.LEFT, padx=3)
+            color_canvas.bind(
+                "<Button-1>",
+                lambda event, ck=color_key: self.selecthighlighter(ck)
+            )
+            self.color_canvases[color_key] = color_canvas
+
         self.colorbutton()
-        self.color_canvas.bind("<Button-1>", lambda e: self.togglehighlighter())
-        
-        # Dropdown arrow - sleeker design
-        self.dropdown_btn = tk.Button(
-            self.color_picker_frame,
-            text="↓",
-            font=('Segoe UI', 8),
-            bg='#1e293b',
-            fg='#94a3b8',
-            activebackground='#334155',
-            activeforeground='white',
-            relief=tk.FLAT,
-            borderwidth=0,
-            width=2,
-            height=1,
-            command=self.colourmenu,
-            cursor='hand2'
-        )
-        self.dropdown_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         # NOTE: The "already marked / not marked" decision is no longer a
         # persistent toolbar toggle. It's now asked per-highlight, right
@@ -3786,68 +3814,41 @@ class CircuitInspector:
     # ================================================================
 
     def colorbutton(self):
-        """Update the circular color button display - sharper widget style"""
-        self.color_canvas.delete("all")
-        
-        # Get current color
-        rgb = self.highlighter_colors[self.current_color_key]['rgb']
-        hex_color = f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
-        
-        # Draw clean circular button with subtle shadow effect
-        if self.active_highlighter:
-            # Active state - prominent glow ring
-            self.color_canvas.create_oval(
-                0, 0, 44, 44,
-                outline='#3b82f6',
-                width=3,
-                fill='#1e293b'
-            )
-            # Main color circle
-            self.color_canvas.create_oval(
-                6, 6, 38, 38,
-                fill=hex_color,
-                outline='',
-                width=0
-            )
-        else:
-            # Inactive state - subtle border
-            self.color_canvas.create_oval(
-                2, 2, 42, 42,
-                outline='#475569',
-                width=1,
-                fill='#1e293b'
-            )
-            # Main color circle
-            self.color_canvas.create_oval(
-                6, 6, 38, 38,
-                fill=hex_color,
-                outline='',
-                width=0
-            )
-
-
-    def colourmenu(self):
-        """Show color picker dropdown menu"""
-        menu = Menu(self.root, tearoff=0, bg='#1e293b', fg='white',
-                   activebackground='#3b82f6', activeforeground='white',
-                   font=('Segoe UI', 10))
-        
-        for color_key, color_info in self.highlighter_colors.items():
-            rgb = color_info['rgb']
+        """Redraw all three toolbar color circles and show the active one."""
+        canvases = getattr(self, 'color_canvases', {})
+        for color_key, canvas in canvases.items():
+            canvas.delete("all")
+            rgb = self.highlighter_colors[color_key]['rgb']
             hex_color = f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'
-            label = f"->{color_info['name']}"
-            
-            menu.add_command(
-                label=label,
-                command=lambda ck=color_key: self.colorchange(ck),
-                foreground=hex_color,
-                font=('Arial', 12, 'bold')
-            )
-        
-        x = self.dropdown_btn.winfo_rootx()
-        y = self.dropdown_btn.winfo_rooty() + self.dropdown_btn.winfo_height()
-        menu.post(x, y)
+            is_active = self.active_highlighter == color_key
 
+            canvas.create_oval(
+                0 if is_active else 2,
+                0 if is_active else 2,
+                44 if is_active else 42,
+                44 if is_active else 42,
+                outline='#3b82f6' if is_active else '#475569',
+                width=3 if is_active else 1,
+                fill='#1e293b'
+            )
+            canvas.create_oval(6, 6, 38, 38, fill=hex_color, outline='', width=0)
+
+    def selecthighlighter(self, color_key):
+        """Activate a color directly, or turn it off when its active circle is clicked."""
+        if self.active_highlighter == color_key:
+            self.togglehighlighter()
+            return
+
+        self.current_color_key = color_key
+        self.active_highlighter = color_key
+        self.root.config(cursor="pencil")
+
+        if self.tool_mode:
+            self.tool_mode = None
+            self.pen_btn.config(bg='#334155', relief=tk.FLAT)
+            self.text_btn.config(bg='#334155', relief=tk.FLAT)
+
+        self.colorbutton()
 
     def colorchange(self, color_key):
         """
@@ -4011,6 +4012,16 @@ class CircuitInspector:
         window appearing to hang / OS marking it "Not Responding".
         Safe to call again while already showing - just updates the message.
         Always pair with a matching self.unbusy() in a finally block.
+
+        Implementation note: this is a plain tk.Frame placed INSIDE the main
+        window (self.root), not a separate Toplevel window. An earlier
+        version used a topmost/overrideredirect Toplevel sized from
+        winfo_rootx/rooty/width/height, which could report stale (0,0) or
+        1x1 geometry if called before the window had been fully mapped -
+        producing a stray borderless window that could appear to cover the
+        whole screen instead of just the app. A child Frame with place()
+        is physically constrained to the parent window's real rendered
+        area, so it can never extend beyond the app's own window.
         """
         try:
             if getattr(self, '_busy_overlay', None) is not None and self._busy_overlay.winfo_exists():
@@ -4020,30 +4031,10 @@ class CircuitInspector:
                 self.root.update_idletasks()
                 return
 
-            overlay = tk.Toplevel(self.root)
-            overlay.overrideredirect(True)
-            overlay.attributes('-topmost', True)
-            try:
-                overlay.attributes('-alpha', 0.97)
-            except tk.TclError:
-                pass
-            overlay.configure(bg='#0f172a')
+            overlay = tk.Frame(self.root, bg='#0f172a')
             self._busy_overlay = overlay
 
-            # Cover the whole main window so nothing underneath is clickable.
-            self.root.update_idletasks()
-            x = self.root.winfo_rootx()
-            y = self.root.winfo_rooty()
-            w = self.root.winfo_width()
-            h = self.root.winfo_height()
-            overlay.geometry(f"{max(w,1)}x{max(h,1)}+{x}+{y}")
-
-            # Semi-dark full-window scrim so the frozen-looking background
-            # doesn't show through, plus a centered card with a spinner.
-            scrim = tk.Frame(overlay, bg='#0f172a')
-            scrim.place(relx=0, rely=0, relwidth=1, relheight=1)
-
-            card = tk.Frame(scrim, bg='#1e293b', highlightthickness=1,
+            card = tk.Frame(overlay, bg='#1e293b', highlightthickness=1,
                              highlightbackground='#334155')
             card.place(relx=0.5, rely=0.5, anchor='center')
 
@@ -4059,8 +4050,12 @@ class CircuitInspector:
             self._busy_spin_index = 0
             self._busy_spin_after_id = None
 
+            # Cover the full client area of the main window - and only the
+            # main window, since this Frame's parent IS self.root, so Tk
+            # will never let it render outside that window's own bounds.
+            overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
             overlay.lift()
-            overlay.focus_force()
+            overlay.focus_set()
             self._spin_busy_overlay()
 
             # Force Tk to actually draw the overlay right now, before the
@@ -4166,16 +4161,34 @@ class CircuitInspector:
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "No actions to undo.", icon='info')
             return
-        action = self.undo_stack.pop()
+        # Peek first so a cancelled confirmation leaves the undo history intact.
+        action = self.undo_stack[-1]
         annotation_id = action.get('annotation_id')
         index = next((i for i, ann in enumerate(self.annotations)
                       if ann.get('_undo_id') == annotation_id), None)
         if index is None:
+            self.undo_stack.pop()
             messagebox.showinfo("Nothing to Undo", "The selected item was already removed.")
             return
+
         annotation = self.annotations[index]
         is_multimark_extra = bool(annotation.get('multimark'))
         excel_row = None if is_multimark_extra else (annotation.get('excel_row') or action.get('excel_row'))
+
+        if excel_row:
+            proceed = messagebox.askyesno(
+                "Undo Punch Entry?",
+                "Warning: This undo operation will also remove the corresponding "
+                "punch entry from the Punch Sheet.\n\n"
+                "Do you want to continue?",
+                icon='warning',
+                parent=self.root
+            )
+            if not proceed:
+                return
+
+        # Remove the action only after any required confirmation is accepted.
+        self.undo_stack.pop()
         try:
             if excel_row:
                 self._remove_punch_excel_row(int(excel_row))
@@ -4735,6 +4748,12 @@ class CircuitInspector:
         deferred via after_idle instead of calling update_idletasks()
         synchronously on every single touch event. Forcing a full Tk flush
         per-event was the main source of pinch lag on fast digitizers.
+
+        Sensitivity: PINCH_SENSITIVITY controls how much zoom change a given
+        amount of finger movement produces. 0.25 means a normal pinch swing
+        moves zoom by up to 25% per update, roughly 1.4x more responsive
+        than the previous tuning - so the page visibly grows/shrinks with
+        less finger travel.
         """
         if (not self.pdf_document or self.active_highlighter or
                 self.tool_mode is not None or self.drawing):
@@ -4744,6 +4763,8 @@ class CircuitInspector:
             raw = float(getattr(event, 'delta', 0.0))
             if raw == 0.0:
                 return 'break'
+
+            PINCH_SENSITIVITY = 0.25  # max zoom-factor swing per event, i.e. 25%
 
             # A pause means a new physical pinch gesture. Reset only the raw
             # sample history, not the current zoom level.
@@ -4761,21 +4782,22 @@ class CircuitInspector:
             self._safe_pinch_last_raw = raw
             if previous is not None and raw > 0 and previous > 0:
                 ratio = raw / previous
-                if 0.70 <= ratio <= 1.40 and abs(ratio - 1.0) > 0.0005:
+                if (1.0 - PINCH_SENSITIVITY) <= ratio <= (1.0 + PINCH_SENSITIVITY) and abs(ratio - 1.0) > 0.0005:
                     factor = ratio
                 else:
-                    factor = pow(1.0018, raw)
+                    factor = pow(1.0018 * (1.0 + PINCH_SENSITIVITY), raw)
             else:
                 if abs(raw) >= 10.0:
-                    factor = pow(1.0018, raw)
+                    factor = pow(1.0018 * (1.0 + PINCH_SENSITIVITY), raw)
                 elif abs(raw) > 1.0:
-                    factor = pow(1.018, raw)
+                    factor = pow(1.018 * (1.0 + PINCH_SENSITIVITY), raw)
                 else:
-                    factor = pow(2.0, raw)
+                    factor = pow(2.0 * (1.0 + PINCH_SENSITIVITY), raw)
 
             # Reject only impossible driver spikes, while retaining the actual
-            # pinch amount for normal events.
-            factor = max(0.70, min(1.40, factor))
+            # pinch amount for normal events. Bound the swing to the
+            # configured sensitivity instead of the old fixed 0.70-1.40 range.
+            factor = max(1.0 - PINCH_SENSITIVITY, min(1.0 + PINCH_SENSITIVITY, factor))
             target = max(
                 self.ZOOM_MIN,
                 min(self.ZOOM_MAX, self.zoom_level * factor)
@@ -6685,10 +6707,9 @@ class CircuitInspector:
             return None
 
     def viewhandbacks(self):
-        """View and verify items returned from production"""
-        
+        """Show the verification queue using the Projects & Cabinets dialog design."""
         pending_items = self.handover_db.get_pending_quality_items()
-        
+
         if not pending_items:
             messagebox.showinfo(
                 "No Items",
@@ -6696,89 +6717,74 @@ class CircuitInspector:
                 icon='info'
             )
             return
-        
-        # Create modern dialog
+
         dlg = tk.Toplevel(self.root)
         dlg.title("Verify Production Rework")
-        dlg.geometry("1040x640")
+        dlg.geometry("1000x620")
+        dlg.minsize(780, 500)
         dlg.configure(bg='#f8fafc')
         dlg.transient(self.root)
         dlg.grab_set()
-        
-        # Header
-        header_frame = tk.Frame(dlg, bg='#0f172a', height=82)
-        header_frame.pack(fill=tk.X)
-        header_frame.pack_propagate(False)
-        
-        tk.Label(header_frame, text="Verify Production Rework",
-                bg='#0f172a', fg='white',
-                font=('Segoe UI Semibold', 18, 'bold')).pack(anchor='w', padx=24, pady=(14, 2))
-        tk.Label(header_frame,
-                text="Review completed production actions, shared remarks, and close verified punches.",
-                bg='#0f172a', fg='#cbd5e1', font=('Segoe UI', 10)).pack(anchor='w', padx=24)
-        
-        # Info bar
-        info_frame = tk.Frame(dlg, bg='#eff6ff')
-        info_frame.pack(fill=tk.X, padx=20, pady=(15, 5))
-        
-        tk.Label(info_frame, text=f"{len(pending_items)} cabinet(s) ready for verification", 
-                bg='#eff6ff', fg='#1e40af', 
-                font=('Segoe UI', 10, 'bold')).pack(pady=8)
-        
-        # Listbox frame
-        list_frame = tk.Frame(dlg, bg='white')
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        tk.Label(list_frame, text="Select a cabinet to review", 
-                font=('Segoe UI', 10, 'bold'),
-                bg='white', fg='#1e293b').pack(anchor='w', pady=(0, 10))
-        
-        # Scrollbar and Listbox
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        listbox = tk.Listbox(list_frame, font=('Consolas', 9),
-                            yscrollcommand=scrollbar.set,
-                            bg='#f8fafc', relief=tk.FLAT,
-                            selectmode=tk.SINGLE, height=15)
-        listbox.pack(fill=tk.BOTH, expand=True)
-        scrollbar.config(command=listbox.yview)
-        
-        # Populate listbox
-        for item in pending_items:
-            display_text = (
-                f"{item['cabinet_id']:20} | {item['project_name']:30} | "
-                f"Rework by: {item['rework_completed_by']:15} | "
-                f"{item['rework_completed_date'][:10]}"
-            )
-            listbox.insert(tk.END, display_text)
-        
-        def loadsel():
-            selection = listbox.curselection()
-            if not selection:
-                messagebox.showwarning("No Selection", "Select a cabinet first.", parent=dlg)
-                return
-            item = pending_items[selection[0]]
 
-            # Copy primitive queue data before destroying the modal list window.
-            item_data = dict(item)
-            dlg.grab_release()
-            dlg.destroy()
-            self.root.update_idletasks()
+        header = tk.Frame(dlg, bg='#1e293b', height=58)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(
+            header, text="Verify Production Rework", bg='#1e293b', fg='white',
+            font=('Segoe UI', 14, 'bold')
+        ).pack(pady=14)
 
-            # Run loading after Tk has completely disposed of the queue dialog.
-            self.root.after(100, lambda: load_verification_item(item_data))
+        search_frame = tk.Frame(dlg, bg='#f8fafc')
+        search_frame.pack(fill=tk.X, padx=18, pady=(16, 8))
+        tk.Label(
+            search_frame, text="Search:", bg='#f8fafc', fg='#334155',
+            font=('Segoe UI', 10, 'bold')
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var, font=('Segoe UI', 11))
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        count_var = tk.StringVar()
+        tk.Label(
+            search_frame, textvariable=count_var, bg='#f8fafc', fg='#64748b',
+            font=('Segoe UI', 9)
+        ).pack(side=tk.RIGHT, padx=(12, 0))
+
+        body = tk.Frame(dlg, bg='white')
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=8)
+
+        columns = ('cabinet', 'project', 'rework_by', 'date')
+        tree = ttk.Treeview(body, columns=columns, show='headings', selectmode='browse')
+        tree.heading('cabinet', text='Cabinet ID')
+        tree.heading('project', text='Project')
+        tree.heading('rework_by', text='Rework Completed By')
+        tree.heading('date', text='Completed Date')
+        tree.column('cabinet', width=180, minwidth=140)
+        tree.column('project', width=330, minwidth=220)
+        tree.column('rework_by', width=220, minwidth=160)
+        tree.column('date', width=140, anchor='center', stretch=False)
+
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        row_items = {}
 
         def load_verification_item(item):
             stage = "initializing"
+            cabinet_label = str(item.get('cabinet_id') or 'selected cabinet')
+            self.busy(f"Loading {cabinet_label} for verification...")
             self.stopmultimark()  # never leave multi-mark mode active across a document swap
             try:
                 stage = "reading project"
+                self.busy(f"Loading {cabinet_label}: reading project details...")
                 project_data = self.db.get_project(item['cabinet_id'])
                 if not project_data:
                     raise RuntimeError(f"Project {item['cabinet_id']} was not found in the project database.")
 
                 stage = "validating files"
+                self.busy(f"Loading {cabinet_label}: validating PDF and Punch Sheet...")
                 pdf_path = os.path.abspath(str(item.get('pdf_path') or ''))
                 excel_path = os.path.abspath(str(item.get('excel_path') or ''))
                 session_path = os.path.abspath(str(item.get('session_path') or '')) if item.get('session_path') else None
@@ -6788,6 +6794,7 @@ class CircuitInspector:
                     raise FileNotFoundError(f"Excel file not found: {excel_path}")
 
                 stage = "closing previous document"
+                self.busy(f"Loading {cabinet_label}: preparing the workspace...")
                 if self.pdf_document is not None:
                     try:
                         self.pdf_document.close()
@@ -6797,6 +6804,7 @@ class CircuitInspector:
                 self._clear_page_render_cache()
 
                 stage = "setting project context"
+                self.busy(f"Loading {cabinet_label}: setting project context...")
                 self.cabinet_id = str(item.get('cabinet_id') or '')
                 self.project_name = str(item.get('project_name') or '')
                 self.sales_order_no = str(item.get('sales_order_no') or '')
@@ -6804,6 +6812,7 @@ class CircuitInspector:
                 self.preparefolders()
 
                 stage = "opening PDF"
+                self.busy(f"Loading {cabinet_label}: opening the PDF...")
                 self.pdf_document = fitz.open(pdf_path)
                 if len(self.pdf_document) == 0:
                     raise RuntimeError("The selected PDF contains no pages.")
@@ -6815,6 +6824,7 @@ class CircuitInspector:
                 self.root.config(cursor="")
 
                 stage = "opening Punch Sheet"
+                self.busy(f"Loading {cabinet_label}: opening the Punch Sheet...")
                 # Validate the workbook before assigning it to the live workspace.
                 test_wb = load_workbook(excel_path, read_only=True, data_only=True)
                 if self.punch_sheet_name not in test_wb.sheetnames:
@@ -6828,6 +6838,7 @@ class CircuitInspector:
                 self.working_excel_path = excel_path
 
                 stage = "loading annotation session"
+                self.busy(f"Loading {cabinet_label}: restoring annotations...")
                 self.annotations = []
                 self.session_refs.clear()
                 if session_path and os.path.isfile(session_path):
@@ -6837,8 +6848,10 @@ class CircuitInspector:
                 self.current_sr_no = self.getnextsr()
 
                 stage = "reading punches"
+                self.busy(f"Loading {cabinet_label}: reading open punches...")
                 punches = self.openpuches()
                 if not punches:
+                    self.unbusy()
                     messagebox.showinfo(
                         "No Open Punches",
                         "The cabinet loaded successfully, but no open punch rows were found.",
@@ -6847,44 +6860,83 @@ class CircuitInspector:
                     return
 
                 stage = "updating workflow status"
+                self.busy(f"Loading {cabinet_label}: updating verification status...")
                 self.update_status_and_sync('being_closed_by_quality')
 
                 stage = "opening verification workspace"
+                self.busy(f"Loading {cabinet_label}: opening verification workspace...")
+                self.unbusy()
                 self.punchclosing()
 
             except BaseException as exc:
+                self.unbusy()
                 log_path = self._log_verification_error(stage, exc)
                 detail = f"Verification failed while {stage}.\n\n{type(exc).__name__}: {exc}"
                 if log_path:
                     detail += f"\n\nDiagnostic log:\n{log_path}"
                 messagebox.showerror("Verification Error", detail, parent=self.root)
+            finally:
+                self.unbusy()
 
-        # Buttons
-        btn_frame = tk.Frame(dlg, bg='#f8fafc')
-        btn_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
-        
-        btn_style = {
-            'font': ('Segoe UI', 10, 'bold'),
-            'relief': tk.FLAT,
-            'cursor': 'hand2',
-            'padx': 20,
-            'pady': 12
-        }
-        
-        tk.Button(btn_frame, text="Open Verification", command=loadsel,
-                 bg='#3b82f6', fg='white', **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        # REMOVED: Quick Verify button as requested
-        
-        tk.Button(btn_frame, text="Cancel", command=dlg.destroy,
-                 bg='#64748b', fg='white', **btn_style).pack(side=tk.RIGHT, padx=5)
-        
-        listbox.bind('<Double-Button-1>', lambda e: loadsel())
+        def populate(*args):
+            query = search_var.get().strip().casefold()
+            tree.delete(*tree.get_children())
+            row_items.clear()
+            visible = 0
+            for item in pending_items:
+                searchable = ' '.join(str(item.get(key, '')) for key in (
+                    'cabinet_id', 'project_name', 'rework_completed_by', 'rework_completed_date'
+                )).casefold()
+                if query and query not in searchable:
+                    continue
+                row_id = tree.insert('', tk.END, values=(
+                    item.get('cabinet_id', ''),
+                    item.get('project_name', ''),
+                    item.get('rework_completed_by', ''),
+                    str(item.get('rework_completed_date') or '')[:10],
+                ))
+                row_items[row_id] = item
+                visible += 1
+            count_var.set(f"{visible} of {len(pending_items)} cabinet(s)")
+            children = tree.get_children()
+            if children:
+                tree.selection_set(children[0])
+                tree.focus(children[0])
 
+        def loadsel(event=None):
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Select a cabinet first.", parent=dlg)
+                return
+            item = row_items.get(selected[0])
+            if not item:
+                return
+            item_data = dict(item)
+            dlg.grab_release()
+            dlg.destroy()
+            self.root.update_idletasks()
+            self.root.after(100, lambda: load_verification_item(item_data))
 
-    # ============================================================================
-    # NEW: verify_production_work_with_punch_closing - Auto-open punch closing
-    # ============================================================================
+        search_var.trace_add('write', populate)
+        tree.bind('<Double-Button-1>', loadsel)
+        tree.bind('<Return>', loadsel)
+
+        buttons = tk.Frame(dlg, bg='#f8fafc')
+        buttons.pack(fill=tk.X, padx=18, pady=(4, 16))
+        tk.Button(
+            buttons, text="Cancel", command=dlg.destroy, bg='#64748b', fg='white',
+            font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=20, pady=9,
+            cursor='hand2'
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            buttons, text="Open Verification", command=loadsel, bg='#3b82f6', fg='white',
+            font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=26, pady=9,
+            cursor='hand2'
+        ).pack(side=tk.RIGHT)
+
+        populate()
+        search_entry.focus_set()
+
 
     def verifyprodrework(self, item_data):
         """Open verification safely after loading a production handback."""

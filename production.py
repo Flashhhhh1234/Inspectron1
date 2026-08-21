@@ -1179,106 +1179,136 @@ class ProductionTool:
         return [record[0] for record in deduplicated]
 
     def loadfrmhandover(self):
-        """
-        Display dialog of pending production items and load selected cabinet.
-        FUNCTIONAL USE: Retrieves quality-inspected items from handover queue, presents list UI,
-        loads selected PDF and Excel into production workspace. Auto-opens production mode.
-        """
+        """Show the production queue using the Projects & Cabinets dialog design."""
         pending_items = self.handover_db.get_pending_production_items()
-
-        # Remove redundant Quality-to-Production queue entries.
-        # Keep only the latest handover version for each cabinet.
         pending_items = self._keep_latest_queue_versions(pending_items)
 
         if not pending_items:
-            messagebox.showinfo("No Items", 
-                              "✓ No items in production queue.\n"
-                              "All items have been processed!", 
-                              icon='info')
+            messagebox.showinfo(
+                "No Items",
+                "No items in the production queue. All items have been processed!",
+                icon='info'
+            )
             return
-        
-        # Create selection dialog
+
         dlg = tk.Toplevel(self.root)
         dlg.title("Production Queue")
-        dlg.geometry("1000x600")
+        dlg.geometry("1000x620")
+        dlg.minsize(780, 500)
         dlg.configure(bg='#f8fafc')
         dlg.transient(self.root)
         dlg.grab_set()
-        
-        # Header
-        header_frame = tk.Frame(dlg, bg='#8b5cf6', height=60)
-        header_frame.pack(fill=tk.X)
-        header_frame.pack_propagate(False)
-        
-        tk.Label(header_frame, text="Production Queue - Select Item",
-                bg='#8b5cf6', fg='white',
-                font=('Segoe UI', 14, 'bold')).pack(pady=15)
-        
-        # Info bar
-        info_frame = tk.Frame(dlg, bg='#eff6ff')
-        info_frame.pack(fill=tk.X, padx=20, pady=(15, 5))
-        
-        tk.Label(info_frame, text=f"Total items in queue: {len(pending_items)}",
-                bg='#eff6ff', fg='#1e40af',
-                font=('Segoe UI', 10, 'bold')).pack(pady=8)
-        
-        # Listbox frame
-        list_frame = tk.Frame(dlg, bg='white')
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        tk.Label(list_frame, text="Select item to load:",
-                font=('Segoe UI', 10, 'bold'), bg='white', fg='#1e293b').pack(anchor='w', pady=(0, 10))
-        
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        listbox = tk.Listbox(list_frame, font=('Consolas', 9),
-                            yscrollcommand=scrollbar.set,
-                            bg='#f8fafc', relief=tk.FLAT,
-                            selectmode=tk.SINGLE, height=18)
-        listbox.pack(fill=tk.BOTH, expand=True)
-        scrollbar.config(command=listbox.yview)
-        
-        # Populate listbox
-        for item in pending_items:
-            status_icon = " " if item['status'] == 'in_progress' else "📦"
-            display = (
-                f"{status_icon} {item['cabinet_id']:20} | {item['project_name']:30} | "
-                f"Punches: {item['open_punches']:3} | By: {item['handed_over_by']:15} | "
-                f"{item['handed_over_date'][:10]}"
-            )
-            listbox.insert(tk.END, display)
-        
-        def load_selected():
-            selection = listbox.curselection()
-            if not selection:
-                messagebox.showwarning("No Selection", "Please select an item first.")
+
+        header = tk.Frame(dlg, bg='#1e293b', height=58)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(
+            header, text="Load from Production Queue", bg='#1e293b', fg='white',
+            font=('Segoe UI', 14, 'bold')
+        ).pack(pady=14)
+
+        search_frame = tk.Frame(dlg, bg='#f8fafc')
+        search_frame.pack(fill=tk.X, padx=18, pady=(16, 8))
+        tk.Label(
+            search_frame, text="Search:", bg='#f8fafc', fg='#334155',
+            font=('Segoe UI', 10, 'bold')
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var, font=('Segoe UI', 11))
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        count_var = tk.StringVar()
+        tk.Label(
+            search_frame, textvariable=count_var, bg='#f8fafc', fg='#64748b',
+            font=('Segoe UI', 9)
+        ).pack(side=tk.RIGHT, padx=(12, 0))
+
+        body = tk.Frame(dlg, bg='white')
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=8)
+
+        columns = ('cabinet', 'project', 'punches', 'handover_by', 'date', 'status')
+        tree = ttk.Treeview(body, columns=columns, show='headings', selectmode='browse')
+        tree.heading('cabinet', text='Cabinet ID')
+        tree.heading('project', text='Project')
+        tree.heading('punches', text='Open Punches')
+        tree.heading('handover_by', text='Handed Over By')
+        tree.heading('date', text='Date')
+        tree.heading('status', text='Status')
+        tree.column('cabinet', width=150, minwidth=120)
+        tree.column('project', width=250, minwidth=180)
+        tree.column('punches', width=100, anchor='center', stretch=False)
+        tree.column('handover_by', width=160, minwidth=120)
+        tree.column('date', width=105, anchor='center', stretch=False)
+        tree.column('status', width=110, anchor='center', stretch=False)
+
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        row_items = {}
+
+        def populate(*args):
+            query = search_var.get().strip().casefold()
+            tree.delete(*tree.get_children())
+            row_items.clear()
+            visible = 0
+            for item in pending_items:
+                searchable = ' '.join(str(item.get(key, '')) for key in (
+                    'cabinet_id', 'project_name', 'handed_over_by', 'handed_over_date', 'status'
+                )).casefold()
+                if query and query not in searchable:
+                    continue
+                date_text = str(item.get('handed_over_date') or '')[:10]
+                status_text = str(item.get('status') or '').replace('_', ' ').title()
+                row_id = tree.insert('', tk.END, values=(
+                    item.get('cabinet_id', ''),
+                    item.get('project_name', ''),
+                    item.get('open_punches', 0),
+                    item.get('handed_over_by', ''),
+                    date_text,
+                    status_text,
+                ))
+                row_items[row_id] = item
+                visible += 1
+            count_var.set(f"{visible} of {len(pending_items)} item(s)")
+            children = tree.get_children()
+            if children:
+                tree.selection_set(children[0])
+                tree.focus(children[0])
+
+        def load_selected(event=None):
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select an item first.", parent=dlg)
                 return
-            
-            item = pending_items[selection[0]]
+            item = row_items.get(selected[0])
+            if not item:
+                return
+            dlg.grab_release()
             dlg.destroy()
             self.loadhndovritm(item)
-        
-        # Buttons
-        btn_frame = tk.Frame(dlg, bg='#f8fafc')
-        btn_frame.pack(fill=tk.X, padx=20, pady=(0, 20))
-        
-        btn_style = {
-            'font': ('Segoe UI', 10, 'bold'),
-            'relief': tk.FLAT,
-            'cursor': 'hand2',
-            'padx': 20,
-            'pady': 12
-        }
-        
-        tk.Button(btn_frame, text="Load Selected", command=load_selected,
-                 bg='#3b82f6', fg='white', **btn_style).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_frame, text="Cancel", command=dlg.destroy,
-                 bg='#64748b', fg='white', **btn_style).pack(side=tk.RIGHT, padx=5)
-        
-        listbox.bind('<Double-Button-1>', lambda e: load_selected())
-    
+
+        search_var.trace_add('write', populate)
+        tree.bind('<Double-Button-1>', load_selected)
+        tree.bind('<Return>', load_selected)
+
+        buttons = tk.Frame(dlg, bg='#f8fafc')
+        buttons.pack(fill=tk.X, padx=18, pady=(4, 16))
+        tk.Button(
+            buttons, text="Cancel", command=dlg.destroy, bg='#64748b', fg='white',
+            font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=20, pady=9,
+            cursor='hand2'
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            buttons, text="Load Selected", command=load_selected, bg='#3b82f6', fg='white',
+            font=('Segoe UI', 10, 'bold'), relief=tk.FLAT, padx=26, pady=9,
+            cursor='hand2'
+        ).pack(side=tk.RIGHT)
+
+        populate()
+        search_entry.focus_set()
+
     def loadhndovritm(self, item):
         """
         Load PDF, Excel, and session data for a quality-handover item into production workspace.
@@ -1479,15 +1509,6 @@ class ProductionTool:
             self.syncmgrstats()
             self.manager_db.updstats(self.cabinet_id, 'being_closed_by_quality')
             
-            messagebox.showinfo(
-                "Handback Complete",
-                f"✓ Successfully handed back to Quality:\n\n"
-                f"Cabinet: {self.cabinet_id}\n"
-                f"Project: {self.project_name}\n\n"
-                f"Session auto-saved\n"
-                f"Quality team will verify and close this item.",
-                icon='info'
-            )
             
             # Clear current work
             self.pdf_document = None
